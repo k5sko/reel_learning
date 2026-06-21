@@ -4,11 +4,20 @@ __pycache__/
 *.py[cod]
 .pytest_cache/
 
-# Clipper runtime artifacts & secrets
+# Clipper runtime artifacts
 storage/
 *.db
-.env
 
 # Node (frontend)
 node_modules/
 dist/
+
+# Secrets — never commit real keys
+.env
+.env.local
+.env.*.local
+.env.example
+
+# Misc
+*.log
+.DS_Store

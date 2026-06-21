@@ -6,7 +6,16 @@ import RelevanceBadge from '../components/RelevanceBadge.jsx'
 import { formatDuration } from '../lib/clips.js'
 
 // Screen 3 — focused full-screen player driven by the real clip video.
-export default function ClipPlayer({ clip, index, total, onClose, onNavigate }) {
+export default function ClipPlayer({
+  clip,
+  index,
+  total,
+  onClose,
+  onNavigate,
+  onOpenGraph,
+  onSaveLesson,
+  onSaveError,
+}) {
   const [playing, setPlaying] = useState(true)
   const [soundOn, setSoundOn] = useState(true)
   const [progress, setProgress] = useState(0)
@@ -46,6 +55,18 @@ export default function ClipPlayer({ clip, index, total, onClose, onNavigate }) 
           </button>
           <div className="flex items-center gap-2">
             <button
+              onClick={onOpenGraph}
+              aria-label="Open memory graph"
+              className="grid h-9 w-9 place-items-center rounded-full bg-black/35 text-white backdrop-blur-sm transition-colors duration-150 ease-geist hover:bg-black/55"
+            >
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none">
+                <circle cx="6" cy="6" r="2.5" stroke="currentColor" strokeWidth="2" />
+                <circle cx="18" cy="9" r="2.5" stroke="currentColor" strokeWidth="2" />
+                <circle cx="9" cy="18" r="2.5" stroke="currentColor" strokeWidth="2" />
+                <path d="M8 7.5l8 1M8 8l1 8" stroke="currentColor" strokeWidth="2" strokeLinecap="round" />
+              </svg>
+            </button>
+            <button
               onClick={() => setSoundOn((s) => !s)}
               aria-label={soundOn ? 'Mute' : 'Unmute'}
               className="grid h-9 w-9 place-items-center rounded-full bg-black/35 text-white backdrop-blur-sm transition-colors duration-150 ease-geist hover:bg-black/55"
@@ -79,7 +100,7 @@ export default function ClipPlayer({ clip, index, total, onClose, onNavigate }) 
         )}
 
         <div className="absolute bottom-36 right-3 z-10">
-          <ActionRail clip={clip} />
+          <ActionRail clip={clip} onSaveLesson={onSaveLesson} onSaveError={onSaveError} />
         </div>
 
         <div className="absolute inset-x-0 bottom-0 z-10 px-4 pb-6">

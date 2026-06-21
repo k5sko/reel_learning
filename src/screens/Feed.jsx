@@ -6,7 +6,17 @@ import RelevanceBadge from '../components/RelevanceBadge.jsx'
 import usePrefersReducedMotion from '../hooks/usePrefersReducedMotion.js'
 
 // Screen 2 — immersive, swipeable reel feed playing the rendered clips.
-export default function Feed({ clips, scoped = false, focusIndex = 0, onOpen, onEdit, onShowAll }) {
+export default function Feed({
+  clips,
+  scoped = false,
+  focusIndex = 0,
+  onOpen,
+  onEdit,
+  onShowAll,
+  onOpenGraph,
+  onSaveLesson,
+  onSaveError,
+}) {
   const reduced = usePrefersReducedMotion()
   const containerRef = useRef(null)
   const slideRefs = useRef([])
@@ -68,6 +78,18 @@ export default function Feed({ clips, scoped = false, focusIndex = 0, onOpen, on
           </span>
         </div>
         <div className="pointer-events-auto flex items-center gap-2">
+          <button
+            onClick={onOpenGraph}
+            aria-label="Open memory graph"
+            className="grid h-9 w-9 place-items-center rounded-full bg-white/15 text-white backdrop-blur-sm transition-colors duration-150 ease-geist hover:bg-white/25"
+          >
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none">
+              <circle cx="6" cy="6" r="2.5" stroke="currentColor" strokeWidth="2" />
+              <circle cx="18" cy="9" r="2.5" stroke="currentColor" strokeWidth="2" />
+              <circle cx="9" cy="18" r="2.5" stroke="currentColor" strokeWidth="2" />
+              <path d="M8 7.5l8 1M8 8l1 8" stroke="currentColor" strokeWidth="2" strokeLinecap="round" />
+            </svg>
+          </button>
           <button
             onClick={() => setSoundOn((s) => !s)}
             aria-label={soundOn ? 'Mute' : 'Unmute'}
@@ -140,7 +162,7 @@ export default function Feed({ clips, scoped = false, focusIndex = 0, onOpen, on
               )}
 
               <div className="absolute bottom-32 right-3 z-10">
-                <ActionRail clip={clip} />
+                <ActionRail clip={clip} onSaveLesson={onSaveLesson} onSaveError={onSaveError} />
               </div>
 
               <div
