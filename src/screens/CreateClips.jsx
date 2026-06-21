@@ -14,7 +14,7 @@ const MODES = [
   { id: 'upload', label: 'Upload MP4' },
 ]
 
-export default function CreateClips({ libraryCount = 0, onDone, onBrowse }) {
+export default function CreateClips({ onDone }) {
   const [mode, setMode] = useState('topic')
   // Each class box: { id, text, state?: 'vague'|'error', clarify?: {message, suggestions} }
   const [topics, setTopics] = useState([{ id: 1, text: '' }])
@@ -508,18 +508,6 @@ export default function CreateClips({ libraryCount = 0, onDone, onBrowse }) {
               </button>
             )}
           </div>
-        )}
-
-        {libraryCount > 0 && phase === 'input' && !checking && (
-          <button
-            onClick={onBrowse}
-            className="mt-3 flex h-12 w-full shrink-0 items-center justify-center gap-2 rounded-sm border border-gray-a-400 bg-bg-100 text-[16px] font-medium text-gray-1000 transition-colors duration-150 ease-geist hover:bg-gray-100"
-          >
-            Browse library
-            <span className="rounded-full bg-gray-100 px-2 py-0.5 font-mono text-[12px] text-gray-900">
-              {libraryCount}
-            </span>
-          </button>
         )}
 
         {/* Token-compression savings — the optimisation, made visible */}

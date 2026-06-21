@@ -8,16 +8,15 @@ import usePrefersReducedMotion from '../hooks/usePrefersReducedMotion.js'
 // Screen 2 — immersive, swipeable reel feed playing the rendered clips.
 export default function Feed({
   clips,
-  scoped = false,
   focusIndex = 0,
-  onOpen,
   onEdit,
-  onShowAll,
   onOpenGraph,
   onSaveLesson,
   onSaveError,
   onNeedMore,
   onWatched,
+  onLike,
+  streaming = false, // recsys mode: append the next clip only when the user scrolls into the loader
 }) {
   const reduced = usePrefersReducedMotion()
   const containerRef = useRef(null)
@@ -28,6 +27,15 @@ export default function Feed({
   const [progress, setProgress] = useState(0)
   const lastProgressRef = useRef(0) // watch fraction of the active clip, for feedback on scroll-past
   const prevActiveRef = useRef(focusIndex)
+  const engagedRef = useRef(new Set()) // clip ids the user liked/saved -> not discarded
+  const handleLike = (clip) => {
+    engagedRef.current.add(clip.id)
+    onLike?.(clip)
+  }
+  const handleSave = (clip) => {
+    engagedRef.current.add(clip.id)
+    return onSaveLesson?.(clip)
+  }
 
   useEffect(() => {
     slideRefs.current[focusIndex]?.scrollIntoView({ block: 'start' })
@@ -54,10 +62,14 @@ export default function Feed({
   useEffect(() => {
     setProgress(0)
     const prev = prevActiveRef.current
-    if (prev !== active && clips[prev]) onWatched?.(clips[prev], lastProgressRef.current)
+    if (prev !== active && clips[prev]) {
+      onWatched?.(clips[prev], lastProgressRef.current, engagedRef.current.has(clips[prev].id))
+    }
     prevActiveRef.current = active
     lastProgressRef.current = 0
-    if (active >= clips.length - 1) onNeedMore?.()
+    // STRICT one-at-a-time: only fetch the next clip when the user scrolls INTO the trailing loader
+    // (index === clips.length) — i.e. after they've watched + had the chance to like/save the current.
+    if (streaming && active >= clips.length) onNeedMore?.()
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [active, clips.length])
 
@@ -85,7 +97,6 @@ export default function Feed({
       {/* top chrome */}
       <div className="pointer-events-none absolute inset-x-0 top-0 z-20 flex items-center justify-between p-4">
         <div className="pointer-events-auto flex items-center gap-4 text-[16px] font-semibold text-white">
-          <span className="opacity-50">Following</span>
           <span className="relative">
             For You
             <span className="absolute -bottom-1.5 left-1/2 h-0.5 w-5 -translate-x-1/2 rounded-full bg-white" />
@@ -121,14 +132,6 @@ export default function Feed({
               </svg>
             )}
           </button>
-          {scoped && (
-            <button
-              onClick={onShowAll}
-              className="flex h-9 items-center rounded-full bg-white/15 px-3 text-[13px] font-medium text-white backdrop-blur-sm transition-colors duration-150 ease-geist hover:bg-white/25"
-            >
-              All clips
-            </button>
-          )}
           <button
             onClick={onEdit}
             className="flex h-9 items-center gap-1.5 rounded-full bg-white/15 px-3 text-[13px] font-medium text-white backdrop-blur-sm transition-colors duration-150 ease-geist hover:bg-white/25"
@@ -161,7 +164,7 @@ export default function Feed({
                   lastProgressRef.current = p
                 }
               }}
-              onEnded={() => active < clips.length - 1 && goTo(active + 1)}
+              onEnded={() => {}}
             >
               {/* tap layer: toggle play */}
               <button
@@ -181,7 +184,7 @@ export default function Feed({
               )}
 
               <div className="absolute bottom-32 right-3 z-10">
-                <ActionRail clip={clip} onSaveLesson={onSaveLesson} onSaveError={onSaveError} />
+                <ActionRail clip={clip} onLike={handleLike} onSaveLesson={handleSave} onSaveError={onSaveError} />
               </div>
 
               <div
@@ -211,10 +214,24 @@ export default function Feed({
             </ClipStage>
           </section>
         ))}
+
+        {/* trailing loader slide: scrolling INTO this is what fetches the next clip (strict 1-at-a-time) */}
+        {streaming && (
+          <section
+            data-index={clips.length}
+            ref={(el) => (slideRefs.current[clips.length] = el)}
+            className="relative grid h-full w-full snap-start snap-always place-items-center bg-black"
+          >
+            <div className="flex flex-col items-center gap-3 text-white/70">
+              <span className="h-8 w-8 animate-spin rounded-full border-2 border-white/25 border-t-white" />
+              <p className="text-[13px]">Picking your next clip…</p>
+            </div>
+          </section>
+        )}
       </div>
 
       <div className="pointer-events-none absolute bottom-3 left-4 z-20 font-mono text-[12px] text-white/55">
-        {active + 1}/{clips.length} · {scoped ? 'this topic' : 'ranked by score'}
+        {Math.min(active + 1, clips.length)}/{clips.length} · for you
         {clips[active]?.pGood != null && (
           <span className="ml-2 text-white/40">
             · rec g={clips[active].pGood.toFixed(2)} f={clips[active].pFit.toFixed(2)} s=

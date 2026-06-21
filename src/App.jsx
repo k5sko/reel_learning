@@ -14,7 +14,6 @@ export default function App() {
   const [tab, setTab] = useState('learn') // learn | foryou | watch | progress | map
   const [clips, setClips] = useState([])
   const [libraryCount, setLibraryCount] = useState(0)
-  const [scoped, setScoped] = useState(false) // feed showing one topic vs whole library
   const [playerIndex, setPlayerIndex] = useState(0)
   const [toast, setToast] = useState(null)
   const [graphRefresh, setGraphRefresh] = useState(0)
@@ -26,12 +25,10 @@ export default function App() {
   // Recommender state: a library map (id -> raw clip) the recommender's clip_ids resolve against,
   // a re-entrancy guard for the one-at-a-time fetch, and whether a recsys session is active.
   const libraryRef = useRef(new Map())
-  const clipsRef = useRef([])
+  const shownIdsRef = useRef(new Set()) // clip ids already in the feed — updated SYNCHRONOUSLY (no
+  // effect lag) so the recommender's exclude list is never stale -> no duplicate clips
   const loadingMoreRef = useRef(false)
-  const recsysReadyRef = useRef(false)
-  useEffect(() => {
-    clipsRef.current = clips
-  }, [clips])
+  const recsysReadyRef = useRef(true) // the ONLY feed is the recommender (profile lives in Redis)
 
   // Refresh the whole-library map (also powers the "Browse library" count).
   const refreshLibrary = useCallback(async () => {
@@ -51,20 +48,6 @@ export default function App() {
     loadCount()
   }, [loadCount])
 
-  // Load the feed scoped to one job (a topic) or the whole library (jobId=null),
-  // and land on the For You tab.
-  const showFeed = async (jobId) => {
-    try {
-      const { clips: raw } = await listClips(jobId)
-      setClips(raw.map(decorateClip))
-    } catch {
-      setClips([])
-    }
-    setScoped(!!jobId)
-    setPlayerIndex(0)
-    setTab('foryou')
-  }
-
   const openGraph = useCallback(() => {
     setTab((cur) => {
       if (cur !== 'map') returnTab.current = cur
@@ -76,8 +59,9 @@ export default function App() {
   // time if no session feed is loaded yet; "Map" remembers where to return.
   const selectTab = useCallback(
     async (t) => {
-      if (t === 'foryou' && clips.length === 0) {
-        await showFeed(null)
+      if (t === 'foryou') {
+        if (clips.length === 0) await openFeed()
+        else setTab('foryou')
         return
       }
       if (t === 'map') {
@@ -86,6 +70,8 @@ export default function App() {
       }
       setTab(t)
     },
+    // openFeed omitted: it's stable (useCallback []) and defined later -> listing it would TDZ-throw
+    // eslint-disable-next-line react-hooks/exhaustive-deps
     [clips.length, openGraph],
   )
 
@@ -126,7 +112,7 @@ export default function App() {
     if (loadingMoreRef.current || !recsysReadyRef.current) return
     loadingMoreRef.current = true
     try {
-      const shown = clipsRef.current.map((c) => c.id)
+      const shown = [...shownIdsRef.current]
       let rec = await recsysRecommend({ exclude: shown, n: 1 })
       let item = rec.items && rec.items[0]
       if (!item) {
@@ -135,7 +121,7 @@ export default function App() {
         rec = await recsysRecommend({ exclude: shown, n: 1, refresh: true })
         item = rec.items && rec.items[0]
       }
-      if (!item) return
+      if (!item || shownIdsRef.current.has(item.clip_id)) return // already shown -> never duplicate
       let raw = libraryRef.current.get(item.clip_id)
       if (!raw) {
         await refreshLibrary()
@@ -150,6 +136,7 @@ export default function App() {
         pFit: item.p_fit,
         recScore: item.score,
       }
+      shownIdsRef.current.add(decorated.id) // mark shown BEFORE state commit (sync) -> exclude stays current
       setClips((prev) => (prev.some((c) => c.id === decorated.id) ? prev : [...prev, decorated]))
     } catch {
       /* recommender optional — leave the feed as-is */
@@ -158,9 +145,8 @@ export default function App() {
     }
   }, [refreshLibrary])
 
-  // Build the For You feed FROM the recommender (clip 1 onward), ranked across the whole corpus for
-  // the session's goal — not just the session's videos in clipper order. Falls back to the
-  // clipper-ordered feed if the recommender has nothing yet (clips still processing).
+  // THE feed = the recommender. First clip from the persisted profile (goals/DAG in Redis); the rest
+  // stream one-at-a-time as the user scrolls. Empty (no goals yet) -> Feed shows its empty state.
   const decorateRecItem = (it) => {
     const raw = libraryRef.current.get(it.clip_id)
     return raw
@@ -174,29 +160,37 @@ export default function App() {
         }
       : null
   }
-  const seedRecsysFeed = useCallback(async (fallbackJobIds, k = 1) => {
+  const openFeed = useCallback(async () => {
     try {
-      const rec = await recsysRecommend({ exclude: [], n: k })
+      const rec = await recsysRecommend({ exclude: [], n: 1 })
       const decorated = (rec.items || []).map(decorateRecItem).filter(Boolean)
-      if (decorated.length) {
-        setClips(decorated)
-        setScoped(true)
-        setPlayerIndex(0)
-        setTab('foryou')
-        return true
-      }
+      shownIdsRef.current = new Set(decorated.map((c) => c.id))
+      setClips(decorated)
     } catch {
-      /* fall through to the clipper-ordered feed */
+      shownIdsRef.current = new Set()
+      setClips([])
     }
-    await showFeed(fallbackJobIds)
-    return false
-  }, [refreshLibrary])
+    setPlayerIndex(0)
+    setTab('foryou')
+  }, [])
 
   // Report watch engagement for a clip the user scrolled past (moves the user's style vector).
-  const onWatched = useCallback((clip, watchRatio) => {
+  // Scrolled past a clip. node -> mastery credit (they watched the material). For STYLE: liked/saved
+  // already sent positive; otherwise it's a soft discard -> push style away from this clip.
+  const onWatched = useCallback((clip, watchRatio, engaged = true) => {
     if (!recsysReadyRef.current || !clip) return
-    // clip_id -> style EMA ; node -> mastery credit (advances the DAG)
-    recsysFeedback({ clip_id: clip.id, watch_ratio: watchRatio, node: clip.recNode }).catch(() => {})
+    recsysFeedback({
+      clip_id: clip.id,
+      node: clip.recNode,
+      watch_ratio: watchRatio,
+      disliked: !engaged,
+    }).catch(() => {})
+  }, [])
+
+  // Like is a real signal — pull the user's style toward this clip.
+  const onLike = useCallback((clip) => {
+    if (!recsysReadyRef.current || !clip) return
+    recsysFeedback({ clip_id: clip.id, node: clip.recNode, liked: true }).catch(() => {})
   }, [])
 
   const completeOnboard = useCallback(async (axes) => {
@@ -231,8 +225,6 @@ export default function App() {
         <div className="relative min-h-0 flex-1 overflow-hidden">
           {tab === 'learn' && (
             <CreateClips
-              libraryCount={libraryCount}
-              onBrowse={() => showFeed(null)}
               onDone={async (jobIds, goals) => {
                 await refreshLibrary()
                 recsysReadyRef.current = false
@@ -244,9 +236,7 @@ export default function App() {
                     /* recsys optional */
                   }
                 }
-                // recsys-ordered feed from clip 1 (falls back to clipper order if empty); else plain feed
-                if (recsysReadyRef.current) await seedRecsysFeed(jobIds, 1)
-                else await showFeed(jobIds)
+                await openFeed() // recommender feed from the (now-updated) profile
               }}
             />
           )}
@@ -254,19 +244,19 @@ export default function App() {
           {tab === 'foryou' && (
             <Feed
               clips={clips}
-              scoped={scoped}
               focusIndex={playerIndex}
               onEdit={() => setTab('learn')}
-              onShowAll={() => showFeed(null)}
               onOpenGraph={openGraph}
               onSaveLesson={handleSaveLesson}
               onSaveError={onSaveError}
               onNeedMore={appendRecommended}
               onWatched={onWatched}
+              onLike={onLike}
+              streaming
             />
           )}
 
-          {tab === 'progress' && <Progress onBrowse={() => showFeed(null)} />}
+          {tab === 'progress' && <Progress onBrowse={() => setTab('learn')} />}
 
           {tab === 'map' && (
             <KnowledgeMap onClose={() => setTab(returnTab.current)} refreshKey={graphRefresh} />

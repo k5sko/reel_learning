@@ -32,6 +32,7 @@ class ClipRecord:
     channel: Optional[str] = None
     views: Optional[int] = None
     likes: Optional[int] = None
+    start: float = 0.0                         # offset in the source video -> intra-video ordering
 
 
 def serialize_clip(clip) -> str:
@@ -59,6 +60,23 @@ class Corpus:
         self.records = records
         self.embs = embs                              # (N, D), L2-normalized
         self._by_id = {r.id: r for r in records}
+        # per-video clip ids in start-time order -> enforce intra-video play order
+        order: dict[str, list] = {}
+        for r in records:
+            order.setdefault(r.job_id, []).append(r)
+        self.job_order = {
+            jid: [r.id for r in sorted(rs, key=lambda r: r.start)] for jid, rs in order.items()
+        }
+
+    def earliest_unshown_ok(self, r: ClipRecord, shown: set) -> bool:
+        """True iff every clip of r's video that starts before r has already been shown — i.e. r is
+        the earliest not-yet-seen clip of its source video."""
+        for cid in self.job_order.get(r.job_id, []):
+            if cid == r.id:
+                return True
+            if cid not in shown:
+                return False
+        return True
 
     def __len__(self) -> int:
         return len(self.records)
@@ -117,6 +135,7 @@ def load_corpus(cfg: Optional[Settings] = None) -> Corpus:
                     channel=meta.get("channel"),
                     views=meta.get("views"),
                     likes=meta.get("likes"),
+                    start=getattr(c, "start", 0.0) or 0.0,
                 )
             )
     embs = (
@@ -136,20 +155,34 @@ def candidates_for(
     """Return (candidates, coverage_ok, hits). ``coverage_ok`` is False when the top hit is below
     ``retrieval_min_sim`` → the caller should auto-query clipper to fetch clips for this concept."""
     cfg = cfg or get_settings()
+    shown = set(exclude)
     hits = corpus.search(concept_text, top_k=cfg.ann_top_k, exclude=exclude)
     # Relevance FILTER (node membership): keep only clips genuinely about this concept. Below the
     # floor isn't a weak candidate — it's a different topic, so drop it entirely.
-    hits = [(r, s) for r, s in hits if s >= cfg.retrieval_min_sim]
+    # Intra-video ORDER gate: only the earliest unshown clip of each source video is eligible
+    # (so a part-3 clip can't precede part-1 of the same video).
+    hits = [
+        (r, s)
+        for r, s in hits
+        if s >= cfg.retrieval_min_sim and corpus.earliest_unshown_ok(r, shown)
+    ]
     coverage_ok = bool(hits)                       # any on-topic clip at all? else -> auto-query
     return [to_candidate(r, sim) for r, sim in hits], coverage_ok, hits
 
 
 # --- cached corpus singleton (rebuild on demand as clips are ingested) -------
+import threading as _threading
+
 _CORPUS: Optional[Corpus] = None
+_CORPUS_LOCK = _threading.Lock()
 
 
 def get_corpus(refresh: bool = False, cfg: Optional[Settings] = None) -> Corpus:
+    """Thread-safe: concurrent /api/recommend calls share one build instead of racing."""
     global _CORPUS
-    if _CORPUS is None or refresh:
-        _CORPUS = load_corpus(cfg)
+    if _CORPUS is not None and not refresh:
+        return _CORPUS
+    with _CORPUS_LOCK:
+        if _CORPUS is None or refresh:
+            _CORPUS = load_corpus(cfg)
     return _CORPUS

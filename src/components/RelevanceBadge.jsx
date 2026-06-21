@@ -13,7 +13,6 @@ export default function RelevanceBadge({ score, className = '' }) {
           fill="currentColor"
         />
       </svg>
-      {pct}% match
     </span>
   )
 }

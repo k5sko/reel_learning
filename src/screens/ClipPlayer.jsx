@@ -106,7 +106,6 @@ export default function ClipPlayer({
         <div className="absolute inset-x-0 bottom-0 z-10 px-4 pb-6">
           <div className="mb-2 flex flex-wrap items-center gap-2 pr-20">
             <SubjectTag accent={clip.accent}>{clip.subjectTag}</SubjectTag>
-            <RelevanceBadge score={clip.relevanceScore} />
           </div>
           <h1 className="font-head pr-20 text-[20px] font-semibold leading-7 tracking-[-0.4px] text-white">
             {clip.title}

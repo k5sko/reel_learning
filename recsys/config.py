@@ -29,7 +29,8 @@ class Settings:
     # --- ranking: score = log P(good|c) + kappa*log P(fit|c) - repeat penalty -------------------
     # (relevance is a candidate FILTER in retrieval, not a score term; it only breaks score ties.)
     kappa: float = 1.0                       # user slider "Popular <-> For You" (0 = pure P(good))
-    repeat_video_penalty: float = 1.0        # subtracted if the clip's video was already shown -> diversity
+    repeat_video_penalty: float = 8.0        # strong: avoid same-video clips back-to-back (only if no other video available)
+    topic_window: int = 3                     # don't re-serve a topic/node within this many items (if alternatives exist)
     prob_floor: float = 1e-4                 # clamp probs before log() so neither term explodes
 
     # --- P(good): Beta-smoothed like:view ----------------------------------

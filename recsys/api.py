@@ -198,19 +198,23 @@ def recommend(body: RecommendIn):
     user_axes = prof.meta.get("user_style")
     kappa = prof.meta.get("kappa")
 
-    excluded = set(body.exclude)
-    seen_jobs = {cid.rsplit("_c_", 1)[0] for cid in body.exclude}
+    # exclude = this feed's shown list PLUS everything ever watched (persisted) -> never replay a clip
+    excluded = set(body.exclude) | set(prof.meta.get("seen") or [])
+    seen_jobs = {cid.rsplit("_c_", 1)[0] for cid in excluded}
     style_cache = store.get("clipstyle") or {}
     cache_dirty = False
     items: list = []
     auto = None
     first_node = None
+    recent = list(prof.meta.get("recent_nodes") or [])   # topic sliding window (persists across calls)
 
     for _ in range(max(1, body.n)):
         frontier = _frontier(prof)
         if not frontier:
             break
-        node = prof.ucb.select(frontier)            # UCB rotates the node each iteration
+        # topic sliding window: skip nodes served in the last `topic_window` items if alternatives exist
+        fresh = [x for x in frontier if x not in recent]
+        node = prof.ucb.select(fresh if fresh else frontier)
         first_node = first_node or node
         concept = prof.dag.nodes[node]["text"]
         cands, coverage_ok, hits = retrieval.candidates_for(corpus, concept, cfg, exclude=excluded)
@@ -246,7 +250,10 @@ def recommend(body: RecommendIn):
         })
         excluded.add(c.id)
         seen_jobs.add(c.id.rsplit("_c_", 1)[0])
+        recent.append(node)
+        recent = recent[-cfg.topic_window:]
 
+    prof.meta["recent_nodes"] = recent
     if cache_dirty:
         store.set("clipstyle", style_cache)
     prof.save(store)
@@ -279,6 +286,12 @@ def feedback(body: FeedbackIn):
     cfg = get_settings()
     store = _store()
     prof = Profile.load(store, cfg)
+
+    # mark the clip permanently seen once the user has scrolled past it (watch reported)
+    if body.clip_id and body.watch_ratio is not None:
+        seen = set(prof.meta.get("seen") or [])
+        seen.add(body.clip_id)
+        prof.meta["seen"] = sorted(seen)
 
     # clip engagement -> move the user's style vector toward/away from the clip's axes
     if body.clip_id:
@@ -330,31 +343,59 @@ def _expand(prof: Profile, node: str) -> None:
 # --- debug view ------------------------------------------------------------
 
 
+def _cos(a, b) -> float:
+    import math
+
+    if not a or not b:
+        return 0.0
+    dot = sum(x * y for x, y in zip(a, b))
+    na = math.sqrt(sum(x * x for x in a))
+    nb = math.sqrt(sum(y * y for y in b))
+    return dot / (na * nb) if na and nb else 0.0
+
+
 @router.get("/api/graph")
 def graph():
-    """The knowledge graph: every queried goal + its prerequisite DAG, with mastery per node.
-    Powers the Obsidian-style map (goals as roots; click a goal -> its prereq subtree)."""
+    """Knowledge graph for the Obsidian-style map:
+    - `goals` + `relations`: the topics the user queried, linked by conceptual similarity (overview).
+    - `nodes` + `edges`: the full prerequisite DAG (drill-in skill tree per goal).
+    """
     cfg = get_settings()
     store = _store()
     prof = Profile.load(store, cfg)
-    goal_nodes = set(prof.meta.get("goal_nodes") or [])
-    nodes = [
-        {
+    goal_ids = [g for g in (prof.meta.get("goal_nodes") or []) if g in prof.dag.nodes]
+
+    def node_obj(nid):
+        nd = prof.dag.nodes[nid]
+        return {
             "id": nid,
             "label": nd.get("text", nid),
             "depth": nd.get("depth", 0),
-            "is_goal": nid in goal_nodes,
+            "is_goal": nid in set(goal_ids),
             "mastery": round(prof.mastery.get(nid), 3),
             "mastered": prof.mastery.is_mastered(nid),
+            "ready": nid in set(_frontier(prof)),
         }
-        for nid, nd in prof.dag.nodes.items()
-    ]
-    edges = [
-        {"from": p, "to": nid}                       # prereq -> node it unlocks
-        for nid in prof.dag.nodes
-        for p in prof.dag.prereqs(nid)
-    ]
-    return {"nodes": nodes, "edges": edges, "goals": sorted(goal_nodes), "frontier": _frontier(prof)}
+
+    nodes = [node_obj(nid) for nid in prof.dag.nodes]
+    edges = [{"from": p, "to": nid} for nid in prof.dag.nodes for p in prof.dag.prereqs(nid)]
+
+    # conceptual relations between the user's TOPICS (goal-goal embedding similarity) — overview edges
+    relations = []
+    embs = {g: prof.dag.nodes[g].get("emb") for g in goal_ids}
+    for i in range(len(goal_ids)):
+        for j in range(i + 1, len(goal_ids)):
+            w = _cos(embs[goal_ids[i]], embs[goal_ids[j]])
+            if w >= 0.30:
+                relations.append({"from": goal_ids[i], "to": goal_ids[j], "weight": round(w, 3)})
+
+    return {
+        "goals": [node_obj(g) for g in goal_ids],
+        "relations": relations,
+        "nodes": nodes,
+        "edges": edges,
+        "frontier": _frontier(prof),
+    }
 
 
 @router.get("/api/profile")
