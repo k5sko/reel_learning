@@ -100,6 +100,17 @@ export async function uploadVideo(file) {
   return asJson(await fetch(u('/api/upload'), { method: 'POST', headers: NG, body: fd }))
 }
 
+// LLM-generated practice questions for a subject (context = grounding snippets).
+export async function generatePractice(subject, context = [], n = 5) {
+  return asJson(
+    await fetch(u('/api/practice'), {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', ...NG },
+      body: JSON.stringify({ subject, context, n }),
+    }),
+  )
+}
+
 // --- recsys recommender (mounted in the same /api namespace) ----------------
 
 // Reset the single-user profile to a new set of learning goals (DAG roots).

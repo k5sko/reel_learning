@@ -374,6 +374,31 @@ def _find(query: str, llm: LLMClient) -> dict:
     return find_video(query, llm, assume_specific=True)
 
 
+# --- practice questions -----------------------------------------------------
+
+
+class PracticeIn(BaseModel):
+    subject: str
+    context: list[str] = []  # optional: titles/summaries of clips watched (grounding)
+    n: int = 5
+
+
+@app.post("/api/practice")
+async def practice(body: PracticeIn):
+    """Generate LLM multiple-choice practice questions for a subject (optionally
+    grounded in clips the learner watched)."""
+    subject = (body.subject or "").strip()
+    if not subject:
+        raise HTTPException(400, "subject is required")
+    from .practice import generate_questions
+
+    n = max(3, min(8, int(body.n or 5)))
+    questions = await asyncio.to_thread(generate_questions, subject, body.context, n, LLMClient())
+    if not questions:
+        return {"status": "error", "message": "Couldn't generate questions — try again."}
+    return {"status": "ok", "subject": subject, "questions": questions}
+
+
 @app.post("/api/upload")
 async def upload_video(file: UploadFile = File(...)):
     """Accept an uploaded MP4 and start a clipping job for it."""

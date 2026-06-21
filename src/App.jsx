@@ -6,6 +6,7 @@ import CreateClips from './screens/CreateClips.jsx'
 import Onboarding from './screens/Onboarding.jsx'
 import Feed from './screens/Feed.jsx'
 import KnowledgeMap from './screens/KnowledgeMap.jsx'
+import Practice from './screens/Practice.jsx'
 import Progress from './screens/Progress.jsx'
 import TabBar from './components/TabBar.jsx'
 import Toast from './components/Toast.jsx'
@@ -265,6 +266,8 @@ export default function App() {
               onWatched={onWatched}
             />
           )}
+
+          {tab === 'practice' && <Practice />}
 
           {tab === 'progress' && <Progress onBrowse={() => showFeed(null)} />}
 
