@@ -1,7 +1,7 @@
-// Immersive 9:16 stage for a clip. When the clip has a real `videoUrl` it plays
-// the rendered .mp4 (object-contain) over a gradient letterbox; otherwise it
-// shows the gradient placeholder + subject monogram. Playback is controlled by
-// the parent via `playing` / `active`; progress + end are reported back.
+// Immersive 9:16 stage for a clip. A clip is VIRTUAL: a [start, end] window over
+// the job's source video. We seek the source to `start`, play, and stop/loop at
+// `end` — no per-clip file. Progress is reported relative to the window.
+// Playback is controlled by the parent via `playing` / `active`.
 
 import { useEffect, useRef } from 'react'
 
@@ -32,25 +32,34 @@ export default function ClipStage({
   const [from, to] = clip.gradient
   const angle = angleFor(clip.id)
   const videoRef = useRef(null)
+  const endedRef = useRef(false)
 
-  // Drive the element from the parent's play intent. Muted autoplay is always
-  // allowed; an unmuted play() may be blocked until a user gesture (the tap
-  // layer in the parent provides one).
+  const start = typeof clip.start === 'number' ? clip.start : 0
+  const end = typeof clip.end === 'number' ? clip.end : start + (clip.durationSec || 0)
+  const span = Math.max(0.1, end - start)
+
+  // Seek to the window start when this clip becomes active (or changes).
+  useEffect(() => {
+    const v = videoRef.current
+    if (!v || !active) return
+    endedRef.current = false
+    const seek = () => {
+      try {
+        v.currentTime = start
+      } catch {
+        /* not seekable yet */
+      }
+    }
+    if (v.readyState >= 1) seek()
+    else v.addEventListener('loadedmetadata', seek, { once: true })
+  }, [active, clip.id, start])
+
+  // Play/pause from the parent's intent (muted autoplay is always allowed).
   useEffect(() => {
     const v = videoRef.current
     if (!v) return
-    if (active && playing) {
-      v.play().catch(() => {})
-    } else {
-      v.pause()
-      if (!active) {
-        try {
-          v.currentTime = 0
-        } catch {
-          /* ignore */
-        }
-      }
-    }
+    if (active && playing) v.play().catch(() => {})
+    else v.pause()
   }, [playing, active, clip.id])
 
   useEffect(() => {
@@ -58,9 +67,36 @@ export default function ClipStage({
     if (v) v.muted = muted
   }, [muted])
 
+  const handleTime = (e) => {
+    const v = e.currentTarget
+    if (v.currentTime < start - 0.25) {
+      try {
+        v.currentTime = start
+      } catch {
+        /* ignore */
+      }
+      return
+    }
+    if (v.currentTime >= end) {
+      // Reached the window end: loop back to start; tell the parent (it may
+      // advance to the next clip; the last clip just loops).
+      try {
+        v.currentTime = start
+      } catch {
+        /* ignore */
+      }
+      if (!endedRef.current) {
+        endedRef.current = true
+        if (onEnded) onEnded()
+      }
+      return
+    }
+    if (onTime) onTime(Math.min(1, Math.max(0, (v.currentTime - start) / span)))
+  }
+
   return (
     <div className="absolute inset-0 overflow-hidden">
-      {/* base gradient (also the letterbox behind 16:9 video) */}
+      {/* base gradient (also the letterbox behind the video) */}
       <div
         className="absolute inset-0"
         style={{ background: `linear-gradient(${angle}deg, ${from} 0%, ${to} 100%)` }}
@@ -82,11 +118,7 @@ export default function ClipStage({
           playsInline
           preload="metadata"
           muted={muted}
-          onTimeUpdate={(e) => {
-            const v = e.currentTarget
-            if (onTime && v.duration) onTime(v.currentTime / v.duration)
-          }}
-          onEnded={() => onEnded && onEnded()}
+          onTimeUpdate={handleTime}
         />
       ) : (
         <span

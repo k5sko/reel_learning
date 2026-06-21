@@ -1,7 +1,7 @@
 """Capstone E2E: the real pipeline (ingest → transcribe → sentences → segment →
-boundaries → render → label) on `say`-synthesized speech, with only the LLM
-faked (no API key in CI). Proves an uploaded file becomes real clip .mp4 files
-with DB records — done-criterion #2, minus the live LLM."""
+boundaries → label) on `say`-synthesized speech, with only the LLM faked (no API
+key in CI). Proves an uploaded file becomes virtual clips (start/end windows over
+the one source video) with DB records — no per-clip files rendered."""
 
 from __future__ import annotations
 
@@ -83,15 +83,19 @@ def test_full_pipeline_upload(tmp_path, monkeypatch):
             pytest.skip(f"whisper unavailable at runtime: {e}")
         raise
 
-    # at least one real clip file produced, with a matching DB record
+    # at least one virtual clip, each a window over the one source video
     assert len(records) >= 1
     from clipper.storage import LocalStorage
 
     st = LocalStorage()
     assert st.exists(job_id, "clips.json")
+    assert not st.exists(job_id, "clips")            # no per-clip files rendered
+    source = st.path(job_id, "video.mp4")
     for r in records:
-        assert r["id"].startswith(job_id + "_")     # globally-unique id
-        assert os.path.exists(r["file_path"])        # served by file_path, not id
+        assert r["id"].startswith(job_id + "_")      # globally-unique id
+        assert r["file_path"] == source              # points at the source video
+        assert os.path.exists(r["file_path"])
+        assert r["end"] > r["start"]                 # a real time window
         assert r["title"] == "The Quick Brown Fox"
         assert r["status"] == "ready"
 

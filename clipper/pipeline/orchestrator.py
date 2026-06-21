@@ -19,9 +19,12 @@ from typing import List, Optional, Set
 from ..db import Job, JobStatus, init_db, session_scope, utcnow
 from ..llm import LLMClient
 from ..storage import Storage, get_storage
-from . import boundaries, ingest, label, render, segment, sentences, transcribe
+from . import boundaries, ingest, label, segment, sentences, transcribe
 
-STAGES = ("ingest", "transcribe", "sentences", "segment", "boundaries", "render", "label")
+# Clips are virtual (start/end over the source video) and played in the client,
+# so there is no eager render stage — rendering a standalone file is on-demand
+# only (see render.export_clip).
+STAGES = ("ingest", "transcribe", "sentences", "segment", "boundaries", "label")
 
 
 def _is_url(ref: str) -> bool:
@@ -79,10 +82,8 @@ async def run_pipeline(
                    lambda: sentences.run(job_id, storage, force="sentences" in force))
         await step(JobStatus.SEGMENTING,
                    lambda: segment.run(job_id, storage, llm, force="segment" in force))
-        await step(JobStatus.RENDERING,
+        await step(JobStatus.SEGMENTING,
                    lambda: boundaries.run(job_id, storage, force="boundaries" in force))
-        await step(JobStatus.RENDERING,
-                   lambda: render.run(job_id, storage, force="render" in force))
         records = await step(JobStatus.LABELING,
                              lambda: label.run(job_id, storage, llm, force="label" in force))
         _set_status(job_id, JobStatus.DONE)

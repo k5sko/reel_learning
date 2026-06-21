@@ -31,13 +31,13 @@ def test_label_writes_records_and_db(tmp_path, monkeypatch):
 
     st = LocalStorage()
     st.job_dir("j")
-    render = [
+    boundaries = [
         {"id": "c_01", "start": 1.0, "end": 20.0, "duration": 19.0,
-         "file_path": "store/j/clips/c_01.mp4", "text": "a focus clip", "reason": "r"},
+         "start_sentence": 0, "end_sentence": 3, "text": "a focus clip", "reason": "r"},
         {"id": "c_02", "start": 25.0, "end": 50.0, "duration": 25.0,
-         "file_path": "store/j/clips/c_02.mp4", "text": "another clip", "reason": "r"},
+         "start_sentence": 4, "end_sentence": 7, "text": "another clip", "reason": "r"},
     ]
-    write_json(st, render, "j", "render.json")
+    write_json(st, boundaries, "j", "boundaries.json")
 
     fake = FakeLLM({
         "title": "Train Your Focus",

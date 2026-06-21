@@ -40,6 +40,8 @@ export function decorateClip(c) {
     channel: c.channel || 'Clip',
     subjectTag: titleCase(subject),
     durationSec: Math.round(c.duration || 0),
+    start: typeof c.start === 'number' ? c.start : 0,
+    end: typeof c.end === 'number' ? c.end : c.duration || 0,
     relevanceScore: typeof c.score === 'number' ? c.score : 0,
     description: c.summary || c.hook || '',
     videoUrl: c.video_url,

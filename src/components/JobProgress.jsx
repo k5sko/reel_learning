@@ -9,7 +9,6 @@ const stepsFor = (mode) => [
   { key: 'ingesting', label: 'Download & extract audio' },
   { key: 'transcribing', label: 'Transcribe' },
   { key: 'segmenting', label: 'Find self-contained moments' },
-  { key: 'rendering', label: 'Render clips' },
   { key: 'labeling', label: 'Title & summarize' },
 ]
 

@@ -1,16 +1,18 @@
 """HTTP API bridging the clipper pipeline to the frontend.
 
 Endpoints:
-  GET  /api/clips                 -> ready clips (metadata) ranked by score
-  GET  /api/clips/{id}/video      -> stream the rendered .mp4 (range-enabled)
+  GET  /api/clips                 -> ready clips (metadata, incl. start/end) ranked by score
+  GET  /api/jobs/{id}/video       -> stream a job's source video (range-enabled)
   POST /api/jobs {url}            -> start a pipeline job for a YouTube URL / path
-  GET  /api/jobs/{id}            -> job status (+ ready clip count)
+  POST /api/search {query}        -> topic → vetted-channel video → job
+  POST /api/upload (file)         -> upload an MP4 → job
+  GET  /api/jobs/{id}             -> job status (+ ready clip count)
 
 Run:  .venv/bin/uvicorn clipper.api:app --port 8000   (from the project root)
 
-This is the thin client-facing layer; the heavy work stays in the pipeline.
-The frontend reads clip metadata from here and streams the clip files; it never
-touches the source video.
+Clips are virtual: each is a start/end window over its job's source video. The
+client streams the source (range requests) and plays the window — no per-clip
+file is rendered.
 """
 
 from __future__ import annotations
@@ -82,7 +84,9 @@ def _shape(clip: Clip, channel: str) -> dict:
         "job_id": clip.job_id,
         "channel": channel,
         "subject": tags[0] if tags else "Clip",
-        "video_url": f"/api/clips/{clip.id}/video",
+        # Virtual clip: play start→end of the source video (shared across the
+        # job's clips, so the browser caches it). No per-clip file.
+        "video_url": f"/api/jobs/{clip.job_id}/video",
         "status": clip.status,
     }
 
@@ -108,16 +112,14 @@ def list_clips(job_id: Optional[str] = None):
     return {"clips": out}
 
 
-@app.get("/api/clips/{clip_id}/video")
-def clip_video(clip_id: str):
-    with session_scope() as s:
-        clip = s.get(Clip, clip_id)
-        if clip is None:
-            raise HTTPException(404, "clip not found")
-        path = clip.file_path
-    if not path or not os.path.exists(path):
-        raise HTTPException(404, "clip video file missing")
-    return FileResponse(path, media_type="video/mp4", filename=f"{clip_id}.mp4")
+@app.get("/api/jobs/{job_id}/video")
+def job_video(job_id: str):
+    """Stream a job's source video (range-enabled). All of that job's virtual
+    clips play windows of this one file."""
+    path = get_storage().path(job_id, "video.mp4")
+    if not os.path.exists(path):
+        raise HTTPException(404, "source video not found")
+    return FileResponse(path, media_type="video/mp4", filename=f"{job_id}.mp4")
 
 
 class JobIn(BaseModel):

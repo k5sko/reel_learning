@@ -17,7 +17,8 @@ from ..db import Clip, ClipStatus, init_db, session_scope
 from ..llm import LLMClient
 from ..storage import Storage, read_json, write_json
 
-RENDER = "render.json"
+BOUNDARIES = "boundaries.json"
+VIDEO = "video.mp4"
 ARTIFACT = "clips.json"
 
 LABEL_SCHEMA = {
@@ -79,13 +80,15 @@ def run(
 ) -> List[dict]:
     if storage.exists(job_id, ARTIFACT) and not force:
         return read_json(storage, job_id, ARTIFACT)
-    if not storage.exists(job_id, RENDER):
+    if not storage.exists(job_id, BOUNDARIES):
         raise FileNotFoundError(
-            f"{RENDER} missing for job {job_id!r}; run render first"
+            f"{BOUNDARIES} missing for job {job_id!r}; run boundaries first"
         )
 
-    clips = read_json(storage, job_id, RENDER)
+    clips = read_json(storage, job_id, BOUNDARIES)
     llm = llm or LLMClient()
+    # Virtual clips: every clip references the one source video + start/end.
+    source_video = storage.path(job_id, VIDEO)
 
     # Label clips concurrently — this is the slowest LLM stage (one call/clip).
     metas: List[Optional[dict]] = [None] * len(clips)
@@ -114,7 +117,7 @@ def run(
                 "summary": meta["summary"],
                 "tags": meta["tags"],
                 "score": meta["score"],
-                "file_path": c.get("file_path", ""),
+                "file_path": source_video,  # source video; clip is start→end of it
                 "status": ClipStatus.READY,
             }
         )

@@ -70,8 +70,7 @@ class Settings(BaseSettings):
     dedup_overlap: float = 0.5              # >this fractional overlap => de-dup
 
     # --- render ------------------------------------------------------------
-    vertical: bool = False                  # 9:16 reformat
-    burn_captions: bool = True
+    vertical: bool = False                  # 9:16 reformat (on-demand export only)
     video_crf: int = 20
     video_preset: str = "veryfast"
     yt_max_height: int = 1080
