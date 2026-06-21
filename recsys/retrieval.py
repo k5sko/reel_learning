@@ -85,11 +85,16 @@ class Corpus:
         return self._by_id.get(clip_id)
 
     def search(
-        self, concept_text: str, top_k: int, exclude: Iterable[str] = ()
+        self,
+        concept_text: str,
+        top_k: int,
+        exclude: Iterable[str] = (),
+        query_vec=None,
     ) -> list[tuple[ClipRecord, float]]:
         if not self.records:
             return []
-        q = embed_one(concept_text)                   # (D,)
+        # use the precomputed node embedding when available (no encoder call in the hot path)
+        q = np.asarray(query_vec, dtype="float32") if query_vec is not None else embed_one(concept_text)
         sims = self.embs @ q                          # cosine (vectors normalized)
         skip = set(exclude)
         out = []
@@ -151,20 +156,27 @@ def candidates_for(
     concept_text: str,
     cfg: Optional[Settings] = None,
     exclude: Iterable[str] = (),
+    query_vec=None,
+    exclude_jobs: Iterable[str] = (),
 ) -> tuple[list[Candidate], bool, list[tuple[ClipRecord, float]]]:
     """Return (candidates, coverage_ok, hits). ``coverage_ok`` is False when the top hit is below
-    ``retrieval_min_sim`` → the caller should auto-query clipper to fetch clips for this concept."""
+    ``retrieval_min_sim`` → the caller should auto-query clipper to fetch clips for this concept.
+    Pass ``query_vec`` (the node's stored embedding) to skip re-encoding the concept.
+    ``exclude_jobs`` = videos on cooldown (recently shown) → none of their clips are eligible."""
     cfg = cfg or get_settings()
     shown = set(exclude)
-    hits = corpus.search(concept_text, top_k=cfg.ann_top_k, exclude=exclude)
+    blocked_jobs = set(exclude_jobs)
+    hits = corpus.search(concept_text, top_k=cfg.ann_top_k, exclude=exclude, query_vec=query_vec)
     # Relevance FILTER (node membership): keep only clips genuinely about this concept. Below the
     # floor isn't a weak candidate — it's a different topic, so drop it entirely.
-    # Intra-video ORDER gate: only the earliest unshown clip of each source video is eligible
-    # (so a part-3 clip can't precede part-1 of the same video).
+    # Intra-video ORDER gate: only the earliest unshown clip of each source video is eligible.
+    # Video COOLDOWN: drop clips whose source video was shown recently (exclude_jobs).
     hits = [
         (r, s)
         for r, s in hits
-        if s >= cfg.retrieval_min_sim and corpus.earliest_unshown_ok(r, shown)
+        if s >= cfg.retrieval_min_sim
+        and r.job_id not in blocked_jobs
+        and corpus.earliest_unshown_ok(r, shown)
     ]
     coverage_ok = bool(hits)                       # any on-topic clip at all? else -> auto-query
     return [to_candidate(r, sim) for r, sim in hits], coverage_ok, hits

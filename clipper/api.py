@@ -256,7 +256,7 @@ async def quiz(body: QuizIn):
                 ctx.append({"title": c.title, "summary": c.summary, "tags": c.tag_list()})
     if not ctx:
         return {"questions": []}
-    n = max(1, min(int(body.n or 2), 3))
+    n = max(1, min(int(body.n or 2), 8))
     questions = await asyncio.to_thread(generate_quiz, ctx, LLMClient(), n)
     return {"questions": questions}
 

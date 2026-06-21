@@ -11,7 +11,6 @@ import Questionnaire from './Questionnaire.jsx'
 const MODES = [
   { id: 'topic', label: 'Topics' },
   { id: 'youtube', label: 'YouTube link' },
-  { id: 'upload', label: 'Upload MP4' },
 ]
 
 export default function CreateClips({ onDone }) {
@@ -403,27 +402,7 @@ export default function CreateClips({ onDone }) {
               </div>
             )}
 
-            {mode === 'upload' && (
-              <div className="flex flex-col gap-2">
-                <label className="flex h-24 cursor-pointer items-center justify-center rounded-md border border-dashed border-gray-a-400 bg-bg-100 text-center text-[14px] text-gray-900 hover:bg-gray-100">
-                  <input
-                    type="file"
-                    accept="video/mp4,video/*"
-                    onChange={(e) => setFile(e.target.files?.[0] || null)}
-                    className="hidden"
-                  />
-                  {file ? `Selected: ${file.name}` : 'Choose an MP4 file…'}
-                </label>
-                <button
-                  onClick={runUpload}
-                  disabled={!file}
-                  className="h-12 rounded-sm bg-gray-1000 px-4 text-[16px] font-medium text-bg-100 transition-colors duration-150 ease-geist hover:bg-gray-900 disabled:bg-gray-100 disabled:text-gray-700"
-                >
-                  Generate
-                </button>
-              </div>
-            )}
-
+            
             {/* URL/upload errors render here (topic errors render inline above) */}
             {mode !== 'topic' && error && (
               <div className="mt-5 rounded-md border border-red-400 bg-red-100 p-4">

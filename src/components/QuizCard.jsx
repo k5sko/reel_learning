@@ -3,30 +3,49 @@ import { useState } from 'react'
 // Interstitial comprehension check that slides up over the reel feed every few
 // reels. Sequential MCQs: tap an option to reveal correct/incorrect + a one-line
 // explanation, then advance. Dismissable (Skip) so it never traps the viewer.
-export default function QuizCard({ quiz, onClose }) {
+export default function QuizCard({ quiz, onClose, onAnswer, onMore }) {
+  const [questions, setQuestions] = useState(quiz)
   const [qi, setQi] = useState(0)
   const [picked, setPicked] = useState(null)
   const [revealed, setRevealed] = useState(false)
   const [correct, setCorrect] = useState(0)
+  const [waiting, setWaiting] = useState(false)
 
-  const q = quiz[qi]
-  const last = qi >= quiz.length - 1
+  const q = questions[qi]
+  const last = qi >= questions.length - 1
 
   const choose = (i) => {
     if (revealed) return
     setPicked(i)
     setRevealed(true)
-    if (i === q.answer_index) setCorrect((c) => c + 1)
+    const isCorrect = i === q.answer_index
+    if (isCorrect) setCorrect((c) => c + 1)
+    onAnswer?.(q, isCorrect) // report per-question result -> recsys mastery
   }
 
-  const advance = () => {
-    if (last) {
-      onClose(correct, quiz.length)
-      return
-    }
+  const step = () => {
     setQi((i) => i + 1)
     setPicked(null)
     setRevealed(false)
+  }
+
+  const advance = async () => {
+    if (!last) {
+      step()
+      return
+    }
+    // On the last question: if a batch is still loading, fetch more questions to keep covering it.
+    if (onMore) {
+      setWaiting(true)
+      const more = await onMore()
+      setWaiting(false)
+      if (more && more.length) {
+        setQuestions((qs) => [...qs, ...more])
+        step()
+        return
+      }
+    }
+    onClose(correct, questions.length)
   }
 
   const optClass = (i) => {
@@ -41,14 +60,8 @@ export default function QuizCard({ quiz, onClose }) {
       <div className="m-3 rounded-xl border border-white/10 bg-[#10131c]/95 p-5 shadow-modal">
         <div className="mb-3 flex items-center justify-between">
           <span className="font-mono text-[11px] uppercase tracking-[0.18em] text-accent-400">
-            Quick check · {qi + 1}/{quiz.length}
+            Quick check · {qi + 1}/{questions.length}
           </span>
-          <button
-            onClick={() => onClose(correct, quiz.length)}
-            className="text-[12px] font-medium text-white/45 transition-colors hover:text-white/80"
-          >
-            Skip
-          </button>
         </div>
 
         <p className="font-head mb-4 text-[19px] font-semibold leading-7 tracking-[-0.3px] text-white">
@@ -89,10 +102,10 @@ export default function QuizCard({ quiz, onClose }) {
 
         <button
           onClick={advance}
-          disabled={!revealed}
+          disabled={!revealed || waiting}
           className="mt-4 flex h-12 w-full items-center justify-center rounded-md bg-accent-400 text-[15px] font-semibold text-white transition-colors duration-150 ease-geist hover:bg-accent-500 disabled:bg-accent-400/30 disabled:text-white/40"
         >
-          {last ? 'Back to reels' : 'Next question'}
+          {waiting ? 'Loading next clips…' : last ? 'Continue' : 'Next question'}
         </button>
       </div>
     </div>

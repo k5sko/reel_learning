@@ -4,7 +4,7 @@ import ActionRail from '../components/ActionRail.jsx'
 import SubjectTag from '../components/SubjectTag.jsx'
 import RelevanceBadge from '../components/RelevanceBadge.jsx'
 import QuizCard from '../components/QuizCard.jsx'
-import { makeQuiz } from '../api.js'
+import { makeQuiz, prereqQuiz } from '../api.js'
 import usePrefersReducedMotion from '../hooks/usePrefersReducedMotion.js'
 
 // Variable "every ~5 reels" cadence — a 4–7 reel gap so it's never on the dot.
@@ -21,6 +21,8 @@ export default function Feed({
   onNeedMore,
   onWatched,
   onLike,
+  onQuizResult, // (node, passed) -> recsys mastery / prereq discovery
+  loadingMore = false, // next batch in flight -> cover the wait with quiz questions
   streaming = false, // recsys mode: append the next clip only when the user scrolls into the loader
 }) {
   const reduced = usePrefersReducedMotion()
@@ -48,14 +50,25 @@ export default function Feed({
   const recentRef = useRef([]) // last few watched clips, most-recent first
   const nextQuizAtRef = useRef(quizGap()) // first check after 4–7 reels
   const quizBusyRef = useRef(false)
+  const quizClipsRef = useRef([]) // clips this quiz was built from -> map question.clip_index to a node
+  const loadingMoreRef = useRef(false)
+  useEffect(() => {
+    loadingMoreRef.current = loadingMore
+  }, [loadingMore])
 
   // Fetch a quiz on the recently-watched clips and slide it up over the feed.
-  // Schedules the next check immediately so a failed/empty fetch still spaces out.
-  const triggerQuiz = async () => {
+  // `cover` = the next batch is loading -> ask for more questions to fill the wait.
+  const triggerQuiz = async (cover = false) => {
     quizBusyRef.current = true
     nextQuizAtRef.current = watchedCountRef.current + quizGap()
+    const clipsForQuiz = recentRef.current.slice() // freeze order: clip_index maps into this
+    if (!clipsForQuiz.length) {
+      quizBusyRef.current = false
+      return
+    }
+    quizClipsRef.current = clipsForQuiz
     try {
-      const { questions } = await makeQuiz(recentRef.current.map((c) => c.id), 2)
+      const { questions } = await makeQuiz(clipsForQuiz.map((c) => c.id), cover ? 4 : 2)
       if (questions && questions.length) {
         setPlaying(false)
         setQuiz(questions)
@@ -64,6 +77,87 @@ export default function Feed({
       /* no quiz this round — the feed just keeps playing */
     } finally {
       quizBusyRef.current = false
+    }
+  }
+
+  const failedNodesRef = useRef([]) // nodes the learner got wrong this quiz -> diagnose their prereqs
+
+  // Extend the quiz: (1) more cover questions while the batch loads, then (2) prereq-diagnostic
+  // questions for any node the learner failed. [] -> quiz closes.
+  const fetchMoreQuiz = async () => {
+    if (loadingMoreRef.current) {
+      try {
+        const { questions } = await makeQuiz(quizClipsRef.current.map((c) => c.id), 8)
+        if (questions && questions.length) return questions
+      } catch {
+        /* fall through */
+      }
+    }
+    while (failedNodesRef.current.length) {
+      const node = failedNodesRef.current.shift()
+      try {
+        const { questions } = await prereqQuiz(node) // each Q tagged with its prereq node id
+        if (questions && questions.length) return questions
+      } catch {
+        /* try the next failed node */
+      }
+    }
+    return []
+  }
+
+  // Cover quiz: generated IN PARALLEL with the batch fetch (see prefetch trigger below) so it's
+  // ready the instant the user reaches the end — no separate wait for quiz generation.
+  const pendingQuizRef = useRef(null) // pre-made cover quiz, shown when the user is stuck loading
+  const atEndRef = useRef(false)
+
+  const prepCoverQuiz = () => {
+    if (quizBusyRef.current || pendingQuizRef.current || !recentRef.current.length) return
+    quizBusyRef.current = true
+    const clipsForQuiz = recentRef.current.slice()
+    quizClipsRef.current = clipsForQuiz
+    makeQuiz(clipsForQuiz.map((c) => c.id), 8)
+      .then(({ questions }) => {
+        pendingQuizRef.current = questions && questions.length ? questions : null
+      })
+      .catch(() => {
+        pendingQuizRef.current = null
+      })
+      .finally(() => {
+        quizBusyRef.current = false
+        maybeShowCover()
+      })
+  }
+
+  // Show the pre-made 8-question quiz once the user scrolls past the last clip of the batch
+  // (whether or not the next batch is still loading — it doubles as the end-of-batch checkpoint).
+  const maybeShowCover = () => {
+    if (atEndRef.current && !quiz && pendingQuizRef.current) {
+      setPlaying(false)
+      setQuiz(pendingQuizRef.current)
+      pendingQuizRef.current = null
+    }
+  }
+
+  // re-check when loading flips (batch started while the user is already at the end)
+  useEffect(() => {
+    maybeShowCover()
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [loadingMore])
+
+  // Each answer -> mastery signal for the node it tested.
+  const onQuizAnswer = (q, isCorrect) => {
+    if (q?.node) {
+      // prereq-diagnostic question (tagged with its prereq node) -> record, DON'T diagnose deeper
+      onQuizResult?.(q.node, isCorrect, true)
+      return
+    }
+    // cover/regular question -> the clip's node (via clip_index)
+    const clip = quizClipsRef.current[q?.clip_index ?? 0] || quizClipsRef.current[0]
+    if (clip?.recNode) {
+      onQuizResult?.(clip.recNode, isCorrect, false)
+      if (!isCorrect && !failedNodesRef.current.includes(clip.recNode)) {
+        failedNodesRef.current.push(clip.recNode) // -> prereq diagnostic when the quiz extends
+      }
     }
   }
 
@@ -96,22 +190,19 @@ export default function Feed({
       const watched = clips[prev]
       // engaged flag: liked/saved -> not a discard (recsys style signal)
       onWatched?.(watched, lastProgressRef.current, engagedRef.current.has(watched.id))
-      // accumulate recently-watched clips and trip a quiz every 4–7 reels
-      recentRef.current = [watched, ...recentRef.current.filter((c) => c.id !== watched.id)].slice(0, 5)
-      watchedCountRef.current += 1
-      if (
-        !quizBusyRef.current &&
-        recentRef.current.length >= 2 &&
-        watchedCountRef.current >= nextQuizAtRef.current
-      ) {
-        triggerQuiz()
-      }
+      // keep the recent batch for the end-of-batch quiz (8 Qs on what was just covered)
+      recentRef.current = [watched, ...recentRef.current.filter((c) => c.id !== watched.id)].slice(0, 8)
     }
     prevActiveRef.current = active
     lastProgressRef.current = 0
-    // STRICT one-at-a-time: only fetch the next clip when the user scrolls INTO the trailing loader
-    // (index === clips.length) — i.e. after they've watched + had the chance to like/save the current.
-    if (streaming && active >= clips.length) onNeedMore?.()
+    atEndRef.current = active >= clips.length // scrolled into the trailing loader = past last clip
+    // Prefetch the next batch ~2 clips before the end AND generate the cover quiz in PARALLEL, so by
+    // the time the user reaches the end the quiz is already made (covers the fetch with no extra wait).
+    if (streaming && active >= clips.length - 2) {
+      onNeedMore?.()
+      prepCoverQuiz()
+    }
+    maybeShowCover()
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [active, clips.length])
 
@@ -262,19 +353,16 @@ export default function Feed({
           <section
             data-index={clips.length}
             ref={(el) => (slideRefs.current[clips.length] = el)}
-            className="relative grid h-full w-full snap-start snap-always place-items-center bg-black"
-          >
-            <div className="flex flex-col items-center gap-3 text-white/70">
-              <span className="h-8 w-8 animate-spin rounded-full border-2 border-white/25 border-t-white" />
-              <p className="text-[13px]">Picking your next clip…</p>
-            </div>
-          </section>
+            className="h-full w-full snap-start snap-always animate-pulse bg-gradient-to-b from-[#1c1f27] to-[#0e0f14]"
+          />
         )}
       </div>
 
       {quiz && (
         <QuizCard
           quiz={quiz}
+          onAnswer={onQuizAnswer}
+          onMore={fetchMoreQuiz}
           onClose={() => {
             setQuiz(null)
             setPlaying(true)
@@ -282,15 +370,6 @@ export default function Feed({
         />
       )}
 
-      <div className="pointer-events-none absolute bottom-3 left-4 z-20 font-mono text-[12px] text-white/55">
-        {Math.min(active + 1, clips.length)}/{clips.length} · for you
-        {clips[active]?.pGood != null && (
-          <span className="ml-2 text-white/40">
-            · rec g={clips[active].pGood.toFixed(2)} f={clips[active].pFit.toFixed(2)} s=
-            {clips[active].recScore != null ? clips[active].recScore.toFixed(2) : '–'}
-          </span>
-        )}
-      </div>
-    </div>
+          </div>
   )
 }

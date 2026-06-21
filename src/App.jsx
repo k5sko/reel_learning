@@ -21,6 +21,7 @@ export default function App() {
   const [highlightIds, setHighlightIds] = useState([])
   // First-open style capture seeds P(fit). Persisted so it only shows once.
   const [needsOnboard, setNeedsOnboard] = useState(() => !localStorage.getItem('rl_onboarded'))
+  const [loadingMore, setLoadingMore] = useState(false) // next batch in flight -> feed shows a quiz
   const returnTab = useRef('foryou') // where the Map tab's close button returns to
 
   // Recommender state: a library map (id -> raw clip) the recommender's clip_ids resolve against,
@@ -112,37 +113,43 @@ export default function App() {
   const appendRecommended = useCallback(async () => {
     if (loadingMoreRef.current || !recsysReadyRef.current) return
     loadingMoreRef.current = true
+    setLoadingMore(true)
     try {
+      const n = 2 + Math.floor(Math.random() * 3) // 2..4 per batch: 1 round-trip, shared LLM rating
       const shown = [...shownIdsRef.current]
-      let rec = await recsysRecommend({ exclude: shown, n: 1 })
-      let item = rec.items && rec.items[0]
-      if (!item) {
+      let rec = await recsysRecommend({ exclude: shown, n })
+      let items = rec.items || []
+      if (!items.length) {
         // corpus may still be processing (auto-query kicked a clip job) -> refresh + retry once
         await refreshLibrary()
-        rec = await recsysRecommend({ exclude: shown, n: 1, refresh: true })
-        item = rec.items && rec.items[0]
+        rec = await recsysRecommend({ exclude: shown, n, refresh: true })
+        items = rec.items || []
       }
-      if (!item || shownIdsRef.current.has(item.clip_id)) return // already shown -> never duplicate
-      let raw = libraryRef.current.get(item.clip_id)
-      if (!raw) {
-        await refreshLibrary()
-        raw = libraryRef.current.get(item.clip_id)
+      const batch = []
+      for (const it of items) {
+        if (shownIdsRef.current.has(it.clip_id)) continue
+        let raw = libraryRef.current.get(it.clip_id)
+        if (!raw) {
+          await refreshLibrary()
+          raw = libraryRef.current.get(it.clip_id)
+        }
+        if (!raw) continue
+        shownIdsRef.current.add(it.clip_id) // mark shown synchronously -> exclude never stale
+        batch.push({
+          ...decorateClip(raw),
+          recsysChannel: it.channel,
+          recNode: it.node,
+          pGood: it.p_good,
+          pFit: it.p_fit,
+          recScore: it.score,
+        })
       }
-      if (!raw) return
-      const decorated = {
-        ...decorateClip(raw),
-        recsysChannel: item.channel, // uploader (recsys P(fit) key) — distinct from display channel
-        recNode: item.node,
-        pGood: item.p_good,
-        pFit: item.p_fit,
-        recScore: item.score,
-      }
-      shownIdsRef.current.add(decorated.id) // mark shown BEFORE state commit (sync) -> exclude stays current
-      setClips((prev) => (prev.some((c) => c.id === decorated.id) ? prev : [...prev, decorated]))
+      if (batch.length) setClips((prev) => [...prev, ...batch])
     } catch {
       /* recommender optional — leave the feed as-is */
     } finally {
       loadingMoreRef.current = false
+      setLoadingMore(false)
     }
   }, [refreshLibrary])
 
@@ -162,18 +169,22 @@ export default function App() {
       : null
   }
   const openFeed = useCallback(async () => {
-    try {
-      const rec = await recsysRecommend({ exclude: [], n: 1 })
-      const decorated = (rec.items || []).map(decorateRecItem).filter(Boolean)
-      shownIdsRef.current = new Set(decorated.map((c) => c.id))
-      setClips(decorated)
-    } catch {
-      shownIdsRef.current = new Set()
-      setClips([])
+    // First 7 clips = RANDOM library clips (instant) — we don't care about their pick, and it avoids
+    // the slow first recommend (corpus build + LLM style rating). The recommender batch prefetches in
+    // the background while these play, then takes over.
+    let lib = libraryRef.current
+    if (!lib.size) lib = await refreshLibrary()
+    const ids = [...lib.keys()]
+    for (let i = ids.length - 1; i > 0; i--) {
+      const j = Math.floor(Math.random() * (i + 1))
+      ;[ids[i], ids[j]] = [ids[j], ids[i]]
     }
+    const seed = ids.slice(0, 7).map((id) => decorateClip(lib.get(id)))
+    shownIdsRef.current = new Set(seed.map((c) => c.id))
+    setClips(seed)
     setPlayerIndex(0)
     setTab('foryou')
-  }, [])
+  }, [refreshLibrary])
 
   // Report watch engagement for a clip the user scrolled past (moves the user's style vector).
   // Scrolled past a clip. node -> mastery credit (they watched the material). For STYLE: liked/saved
@@ -192,6 +203,13 @@ export default function App() {
   const onLike = useCallback((clip) => {
     if (!recsysReadyRef.current || !clip) return
     recsysFeedback({ clip_id: clip.id, node: clip.recNode, liked: true }).catch(() => {})
+  }, [])
+
+  // Quiz answer for a node -> mastery (pass up / fail down). diagnostic=true (prereq check) records
+  // mastery without expanding deeper (one level only).
+  const onQuizResult = useCallback((node, passed, diagnostic = false) => {
+    if (!recsysReadyRef.current || !node) return
+    recsysFeedback({ node, problem_passed: passed, diagnostic }).catch(() => {})
   }, [])
 
   const completeOnboard = useCallback(async (axes) => {
@@ -253,6 +271,8 @@ export default function App() {
               onNeedMore={appendRecommended}
               onWatched={onWatched}
               onLike={onLike}
+              onQuizResult={onQuizResult}
+              loadingMore={loadingMore}
               streaming
             />
           )}

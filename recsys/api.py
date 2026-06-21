@@ -145,45 +145,54 @@ _MAX_INFLIGHT = 2
 
 
 def _auto_query(concept: str) -> dict:
-    """Best-effort live fetch when a node has thin clip coverage. Deduped per concept + capped."""
+    """Thin-coverage live fetch — FULLY background (find_video does yt-dlp+LLM, ~seconds), so the
+    recommend response never blocks on it. Deduped per concept + capped."""
     with _inflight_lock:
         if concept in _inflight_fetch:
             return {"status": "in_progress", "concept": concept}
         if len(_inflight_fetch) >= _MAX_INFLIGHT:
             return {"status": "busy"}
         _inflight_fetch.add(concept)
-    try:
-        from clipper.finder import find_video
-        from clipper.llm import LLMClient
-        from clipper.pipeline import orchestrator
 
-        res = find_video(concept, LLMClient(), assume_specific=True)
-        if res.get("status") != "found":
+    def _run():
+        try:
+            import asyncio
+
+            from clipper.finder import find_video
+            from clipper.llm import LLMClient
+            from clipper.pipeline import orchestrator
+
+            res = find_video(concept, LLMClient(), assume_specific=True)
+            if res.get("status") == "found":
+                job_id = orchestrator.create_job(res["video"]["url"])
+                asyncio.run(orchestrator.run_pipeline(job_id))
+        except Exception:  # noqa: BLE001 — best-effort
+            pass
+        finally:
             with _inflight_lock:
                 _inflight_fetch.discard(concept)
-            return {"status": res.get("status", "not_found")}
-        job_id = orchestrator.create_job(res["video"]["url"])
-        _run_pipeline_bg(job_id, concept)
-        return {"status": "started", "job_id": job_id, "video": res["video"]}
-    except Exception as e:  # noqa: BLE001
-        with _inflight_lock:
-            _inflight_fetch.discard(concept)
-        return {"status": "error", "detail": str(e)}
+
+    threading.Thread(target=_run, daemon=True).start()
+    return {"status": "fetching", "concept": concept}
 
 
-def _clip_styles(hits, store, user_axes) -> dict:
-    """{clip_id: axes} for the candidates. LLM-rate uncached ones (only when the user is onboarded —
-    no preference means no point spending the call). Cached in Redis `rec:clipstyle`."""
-    if not user_axes:
-        return {}
-    cache = store.get("clipstyle") or {}
-    missing = [{"id": r.id, "text": r.text} for r, _ in hits if r.id not in cache]
-    if missing:
-        rated = recsys_llm.rate_clip_styles(missing[:30])
-        if rated:
-            cache.update(rated)
-            store.set("clipstyle", cache)
-    return cache
+def _rate_styles_bg(to_rate: dict) -> None:
+    """Rate uncached clip styles in a daemon thread + merge into the Redis cache — keeps the LLM
+    call OFF the recommend hot path. Until ready, clips rank with neutral P(fit); warms next call."""
+    items = [{"id": i, "text": t} for i, t in list(to_rate.items())[:40]]
+
+    def _run():
+        try:
+            rated = recsys_llm.rate_clip_styles(items)
+            if rated:
+                st = _store()
+                cur = st.get("clipstyle") or {}
+                cur.update(rated)
+                st.set("clipstyle", cur)
+        except Exception:  # noqa: BLE001 — best-effort; neutral fit if it fails
+            pass
+
+    threading.Thread(target=_run, daemon=True).start()
 
 
 @router.post("/api/recommend")
@@ -202,11 +211,15 @@ def recommend(body: RecommendIn):
     excluded = set(body.exclude) | set(prof.meta.get("seen") or [])
     seen_jobs = {cid.rsplit("_c_", 1)[0] for cid in excluded}
     style_cache = store.get("clipstyle") or {}
-    cache_dirty = False
+    to_rate: dict = {}                                # uncached clips -> rated in the BACKGROUND
     items: list = []
     auto = None
     first_node = None
     recent = list(prof.meta.get("recent_nodes") or [])   # topic sliding window (persists across calls)
+    # video cooldown: don't re-show a source video until ~1/3 of the other videos have appeared
+    total_videos = len({r.job_id for r in corpus.records}) or 1
+    cooldown = max(1, total_videos // 3)
+    recent_videos = list(prof.meta.get("recent_videos") or [])
 
     for _ in range(max(1, body.n)):
         frontier = _frontier(prof)
@@ -217,16 +230,17 @@ def recommend(body: RecommendIn):
         node = prof.ucb.select(fresh if fresh else frontier)
         first_node = first_node or node
         concept = prof.dag.nodes[node]["text"]
-        cands, coverage_ok, hits = retrieval.candidates_for(corpus, concept, cfg, exclude=excluded)
+        node_emb = prof.dag.nodes[node].get("emb")    # reuse stored embedding -> no encoder call
+        blocked_videos = set(recent_videos[:cooldown])   # videos still on cooldown
+        cands, coverage_ok, hits = retrieval.candidates_for(
+            corpus, concept, cfg, exclude=excluded, query_vec=node_emb, exclude_jobs=blocked_videos
+        )
 
-        if user_axes:                               # rate uncached candidate styles (cached in Redis)
-            missing = [{"id": r.id, "text": r.text} for r, _ in hits if r.id not in style_cache]
-            if missing:
-                rated = recsys_llm.rate_clip_styles(missing[:30])
-                if rated:
-                    style_cache.update(rated)
-                    cache_dirty = True
-        for c in cands:
+        if user_axes:                               # queue uncached clips for BACKGROUND rating
+            for r, _ in hits:
+                if r.id not in style_cache and r.id not in to_rate:
+                    to_rate[r.id] = r.text
+        for c in cands:                             # neutral fit for not-yet-rated clips (warms in bg)
             c.log_fit = recsys_style.log_p_fit(style_cache.get(c.id), user_axes, cfg)
 
         scored = ranking.score_candidates(cands, cfg, kappa=kappa, seen_jobs=seen_jobs)
@@ -249,14 +263,19 @@ def recommend(body: RecommendIn):
             "relevance": s.relevance,
         })
         excluded.add(c.id)
-        seen_jobs.add(c.id.rsplit("_c_", 1)[0])
+        jid = c.id.rsplit("_c_", 1)[0]
+        seen_jobs.add(jid)
+        recent_videos = [jid] + [v for v in recent_videos if v != jid]   # this video -> cooldown front
         recent.append(node)
         recent = recent[-cfg.topic_window:]
 
     prof.meta["recent_nodes"] = recent
-    if cache_dirty:
-        store.set("clipstyle", style_cache)
-    prof.save(store)
+    prof.meta["recent_videos"] = recent_videos[:total_videos]   # cap to corpus size
+    # recommend only mutates UCB + meta -> write just those (skip serializing the big DAG every call)
+    store.set("ucb", prof.ucb.to_state())
+    store.set("profile", prof.meta)
+    if to_rate:
+        _rate_styles_bg(to_rate)                      # off the hot path -> warms P(fit) for next call
 
     status = "ok" if items else ("empty" if not _frontier(prof) else "thin")
     return {
@@ -279,6 +298,7 @@ class FeedbackIn(BaseModel):
     watch_ratio: Optional[float] = None
     node: Optional[str] = None
     problem_passed: Optional[bool] = None
+    diagnostic: bool = False  # prereq diagnostic result -> record mastery but DON'T expand deeper
 
 
 @router.post("/api/feedback")
@@ -312,7 +332,9 @@ def feedback(body: FeedbackIn):
     if body.node and body.problem_passed is not None:
         prof.mastery.record(body.node, body.problem_passed)
         prof.spaced.record(body.node, body.problem_passed, now=int(prof.meta.get("t", 0)))
-        if not body.problem_passed:
+        # fail -> discover prereqs (one level). diagnostic results never expand -> we stop digging
+        # into prereqs-of-prereqs (a weak prereq just gets re-taught, not re-diagnosed).
+        if not body.problem_passed and not body.diagnostic:
             _expand(prof, body.node)
     elif body.node and body.watch_ratio is not None:
         # clip watched (no problem): small mastery credit so the node eventually unlocks dependents
@@ -325,6 +347,43 @@ def feedback(body: FeedbackIn):
         "frontier": _frontier(prof),
         "user_style": prof.meta.get("user_style"),
     }
+
+
+# --- prerequisite diagnostic: a failed node -> quiz ITS prereqs to find the weak one(s) ----------
+
+
+class PrereqQuizIn(BaseModel):
+    node: str
+
+
+@router.post("/api/prereq-quiz")
+def prereq_quiz(body: PrereqQuizIn):
+    """One MCQ per prerequisite of `node` (discovering them first if needed). Each question is tagged
+    with its prereq node id, so answering it diagnoses that specific prereq. ONE level only."""
+    cfg = get_settings()
+    store = _store()
+    prof = Profile.load(store, cfg)
+    if body.node not in prof.dag.nodes:
+        return {"questions": []}
+    prereqs = sorted(prof.dag.prereqs(body.node))
+    if not prereqs:                                   # not expanded yet -> discover, persist
+        _expand(prof, body.node)
+        prof.save(store)
+        prereqs = sorted(prof.dag.prereqs(body.node))
+    if not prereqs:
+        return {"questions": []}
+
+    from clipper.quiz import generate_concept_quiz
+
+    prereqs = prereqs[:6]                              # cap the diagnostic length
+    concepts = [prof.dag.nodes[p]["text"] for p in prereqs if p in prof.dag.nodes]
+    qs = generate_concept_quiz(concepts)
+    out = []
+    for q in qs:
+        ci = q.get("concept_index", 0)
+        if 0 <= ci < len(prereqs):
+            out.append({**q, "node": prereqs[ci]})   # tag: answering -> diagnoses this prereq
+    return {"questions": out}
 
 
 def _expand(prof: Profile, node: str) -> None:

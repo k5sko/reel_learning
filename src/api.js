@@ -155,6 +155,17 @@ export async function recsysGraph() {
   return asJson(await fetch(u('/api/graph'), { headers: NG }))
 }
 
+// Diagnostic: one MCQ per prerequisite of a failed node (each tagged with its prereq node id).
+export async function prereqQuiz(node) {
+  return asJson(
+    await fetch(u('/api/prereq-quiz'), {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', ...NG },
+      body: JSON.stringify({ node }),
+    }),
+  )
+}
+
 // Onboarding: store the learner's style axes (0..1 each on the STYLE_AXES set).
 export async function recsysOnboard(axes) {
   return asJson(

@@ -24,6 +24,15 @@ def _client(llm=None):
     return LLMClient()
 
 
+def _fast_client(llm=None):
+    """Haiku for the cheap, high-volume style-rating call — much faster than the default model."""
+    if llm is not None:
+        return llm
+    from clipper.llm import LLMClient
+
+    return LLMClient(model="claude-haiku-4-5-20251001")
+
+
 def decompose_prereqs(concept: str, llm=None, max_items: int = 5) -> List[str]:
     """Immediate prerequisites of a concept (clip-sized, ≥ high-school). [] on any failure."""
     prompt = (
@@ -69,7 +78,7 @@ def rate_clip_styles(items: list, llm=None) -> dict:
         f"the subject):\n{axes_desc}\n\nClips:\n{listing}"
     )
     try:
-        out = _client(llm).complete_json(prompt, schema) or {}
+        out = _fast_client(llm).complete_json(prompt, schema) or {}
         res = {}
         for r in out.get("ratings", []):
             cid = r.get("id")
