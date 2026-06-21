@@ -46,11 +46,20 @@ def run(
 
     title: Optional[str] = None
     auto_subs: Optional[str] = None
+    # video-level metadata for the recommender: channel -> P(fit), like:view -> P(good).
+    channel: Optional[str] = None
+    views: Optional[int] = None
+    likes: Optional[int] = None
+    webpage_url: Optional[str] = None
 
     if source == "youtube":
         info = _download_youtube(source_ref, video_path, storage, job_id)
         title = info.get("title")
         auto_subs = info.get("auto_subs")
+        channel = info.get("channel")
+        views = info.get("views")
+        likes = info.get("likes")
+        webpage_url = info.get("webpage_url")
     elif source == "upload":
         _place_as_mp4(source_ref, video_path, keep_source=True)
         title = os.path.basename(source_ref)
@@ -69,6 +78,11 @@ def run(
         "audio": AUDIO_NAME,
         "duration": duration,
         "auto_subs": auto_subs,
+        # recommender signals (None for uploads / when YouTube omits them)
+        "channel": channel,
+        "views": views,
+        "likes": likes,
+        "webpage_url": webpage_url,
     }
     write_json(storage, artifact, job_id, ARTIFACT)
     return artifact
@@ -132,7 +146,15 @@ def _download_youtube(url: str, video_path: str, storage: Storage, job_id: str) 
             except OSError:
                 pass
 
-    return {"title": info.get("title"), "auto_subs": auto_subs}
+    return {
+        "title": info.get("title"),
+        "auto_subs": auto_subs,
+        # yt-dlp exposes these on the info dict; clipper previously discarded them.
+        "channel": info.get("channel") or info.get("uploader"),
+        "views": info.get("view_count"),
+        "likes": info.get("like_count"),
+        "webpage_url": info.get("webpage_url"),
+    }
 
 
 def _place_as_mp4(src: str, dest: str, *, keep_source: bool) -> None:

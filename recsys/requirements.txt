@@ -1,0 +1,7 @@
+# recsys deps (in addition to clipper/requirements.txt). Torch is installed CPU-only in the
+# Dockerfile before this file, so sentence-transformers reuses it instead of pulling a CUDA wheel.
+
+faiss-cpu==1.9.0.post1
+sentence-transformers==3.3.1
+redis==5.2.1
+numpy>=1.26,<3

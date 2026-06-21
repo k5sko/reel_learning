@@ -45,10 +45,10 @@ function Target({ s = 22 }) {
 const TABS = [
   ['learn', 'Learn', Search],
   ['foryou', 'For You', Sparkles],
-  ['watch', 'Watch', Play],
   ['progress', 'Progress', Layers],
   ['map', 'Map', Target],
 ]
+void Play // watch tab removed; icon kept for reference
 
 export default function TabBar({ tab, onSelect, dark = false }) {
   return (

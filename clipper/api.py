@@ -62,6 +62,17 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+# Mount the recommender (recsys) router into this app — one uvicorn, one /api namespace.
+# Optional: if recsys deps are missing the clipper API still serves.
+try:
+    from recsys.api import router as recsys_router
+
+    app.include_router(recsys_router)
+except Exception as _e:  # noqa: BLE001
+    import logging
+
+    logging.getLogger(__name__).warning("recsys router not mounted: %s", _e)
+
 
 def _channel_for(job: Job, storage, cache: dict) -> str:
     if job.id in cache:

@@ -31,6 +31,7 @@ export default function CreateClips({ libraryCount = 0, onDone, onBrowse }) {
   const [stats, setStats] = useState(null) // transcript-compression savings badge
   const cancelled = useRef(false)
   const nextId = useRef(2)
+  const goalsRef = useRef([]) // the topics for this session -> seeds the recsys profile
 
   useEffect(() => {
     // Reset on (re)mount so StrictMode's mount→unmount→remount doesn't freeze polling.
@@ -72,7 +73,7 @@ export default function CreateClips({ libraryCount = 0, onDone, onBrowse }) {
       setJobs([...live])
       // Auto-advance once every job has settled (done or errored).
       if (live.every((j) => j.stage === 'done' || j.error)) {
-        if (live.some((j) => j.stage === 'done')) await onDone(live.map((j) => j.job_id))
+        if (live.some((j) => j.stage === 'done')) await onDone(live.map((j) => j.job_id), goalsRef.current)
         else setError('Every video failed to process. See the stages above.')
         return
       }
@@ -149,6 +150,7 @@ export default function CreateClips({ libraryCount = 0, onDone, onBrowse }) {
     setNote('')
     setJobs([])
     setPhase('work')
+    goalsRef.current = [quizTopic]
     try {
       const r = await startLearning(quizTopic, answers, 3)
       if (r.status === 'started' && r.jobs?.length) {
@@ -168,6 +170,7 @@ export default function CreateClips({ libraryCount = 0, onDone, onBrowse }) {
     setJobs([])
     setNote('')
     setPhase('work')
+    goalsRef.current = classTopics
     // Fewer videos per class as the list grows, so the total stays reasonable.
     const maxVideos = Math.max(1, Math.min(3, Math.round(6 / classTopics.length)))
     try {
@@ -233,7 +236,7 @@ export default function CreateClips({ libraryCount = 0, onDone, onBrowse }) {
 
   // Jump to the feed for this session's videos without waiting for every job —
   // shows whatever clips are ready (a slow/stuck video won't block the rest).
-  const openClipsNow = () => onDone(jobs.map((j) => j.job_id))
+  const openClipsNow = () => onDone(jobs.map((j) => j.job_id), goalsRef.current)
 
   const keyHint =
     error && /api_key|x-api-key|authentication|401|ANTHROPIC|GROQ/i.test(error)

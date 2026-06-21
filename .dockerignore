@@ -1,0 +1,17 @@
+# Keep the build context lean + avoid copying host envs into the image.
+.git
+.venv
+node_modules
+dist
+.next
+__pycache__
+**/__pycache__
+*.pyc
+*.pyo
+storage
+*.pdf
+*.zip
+KuaiRec*
+.env
+.pytest_cache
+.DS_Store

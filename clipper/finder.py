@@ -96,6 +96,41 @@ def search_channel_videos(query: str, channel: dict, limit: int = 6) -> List[dic
     return out
 
 
+def search_youtube_general(query: str, limit: int = 8) -> List[dict]:
+    """General YouTube search (no channel scoping) — the resilient fallback when the vetted-channel
+    search yields nothing (yt-dlp channel search throttles intermittently) or a subject isn't on a
+    vetted channel. Same entry shape as ``search_channel_videos``."""
+    import yt_dlp
+
+    opts = {
+        "quiet": True,
+        "no_warnings": True,
+        "extract_flat": True,
+        "extractor_args": {"youtube": {"player_client": ["android", "ios", "web"]}},
+    }
+    with yt_dlp.YoutubeDL(opts) as ydl:
+        info = ydl.extract_info(f"ytsearch{limit * 2}:{query}", download=False)
+
+    out: List[dict] = []
+    for e in info.get("entries") or []:
+        vid = e.get("id", "")
+        dur = e.get("duration")
+        if not dur or len(vid) != 11:
+            continue
+        out.append(
+            {
+                "id": vid,
+                "title": e.get("title", ""),
+                "url": f"https://www.youtube.com/watch?v={vid}",
+                "duration": dur,
+                "channel": e.get("channel") or e.get("uploader") or "YouTube",
+            }
+        )
+        if len(out) >= limit:
+            break
+    return out
+
+
 def pick_best(query: str, candidates: List[dict], llm: LLMClient) -> dict:
     lines = []
     for i, c in enumerate(candidates):
@@ -145,9 +180,16 @@ def find_video(
         except Exception:
             continue
     if not candidates:
+        # Vetted channels returned nothing (throttled, or subject not covered) — fall back to a
+        # general YouTube search so the topic never dead-ends.
+        try:
+            candidates = search_youtube_general(search_query, 8)
+        except Exception:
+            candidates = []
+    if not candidates:
         return {
             "status": "not_found",
-            "message": f"No videos found for {query!r} on the available channels.",
+            "message": f"No videos found for {query!r}.",
         }
 
     pick = pick_best(query, candidates, llm)

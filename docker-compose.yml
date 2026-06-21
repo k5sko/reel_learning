@@ -1,0 +1,39 @@
+# Backend stack: the Python API (clipper + recsys) + Redis profile store.
+# Frontend stays local (`npm run dev`). Bring up:  docker compose up --build
+services:
+  api:
+    build: .
+    ports:
+      - "8000:8000"
+    environment:
+      - REDIS_URL=redis://redis:6379/0
+      - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY:-}
+      - GROQ_API_KEY=${GROQ_API_KEY:-}
+      # Groq Whisper (large-v3-turbo) — ~100x faster than CPU faster-whisper for transcription.
+      - CLIPPER_ASR_BACKEND=groq
+      # The feed is a small vertical player; 720p is plenty and downloads much faster than 1080p.
+      - CLIPPER_YT_MAX_HEIGHT=720
+    volumes:
+      - ./:/app                              # live code (dev); pairs with --reload below
+      - hf-cache:/root/.cache/huggingface    # persist downloaded encoders across restarts
+      - ./storage:/app/storage               # clip artifacts survive container restarts
+    depends_on:
+      redis:
+        condition: service_healthy
+    command: uvicorn clipper.api:app --host 0.0.0.0 --port 8000 --reload
+
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"                          # exposed so local Python can hit it too
+    volumes:
+      - redis-data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+
+volumes:
+  hf-cache:
+  redis-data:

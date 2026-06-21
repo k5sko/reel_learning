@@ -16,6 +16,8 @@ export default function Feed({
   onOpenGraph,
   onSaveLesson,
   onSaveError,
+  onNeedMore,
+  onWatched,
 }) {
   const reduced = usePrefersReducedMotion()
   const containerRef = useRef(null)
@@ -24,6 +26,8 @@ export default function Feed({
   const [playing, setPlaying] = useState(true)
   const [soundOn, setSoundOn] = useState(false)
   const [progress, setProgress] = useState(0)
+  const lastProgressRef = useRef(0) // watch fraction of the active clip, for feedback on scroll-past
+  const prevActiveRef = useRef(focusIndex)
 
   useEffect(() => {
     slideRefs.current[focusIndex]?.scrollIntoView({ block: 'start' })
@@ -45,7 +49,17 @@ export default function Feed({
     return () => io.disconnect()
   }, [clips.length])
 
-  useEffect(() => setProgress(0), [active])
+  // On slide change: report watch engagement for the clip just left, then ask the recommender for
+  // the next one when we've reached the end (one-at-a-time growth). The parent guards re-entrancy.
+  useEffect(() => {
+    setProgress(0)
+    const prev = prevActiveRef.current
+    if (prev !== active && clips[prev]) onWatched?.(clips[prev], lastProgressRef.current)
+    prevActiveRef.current = active
+    lastProgressRef.current = 0
+    if (active >= clips.length - 1) onNeedMore?.()
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [active, clips.length])
 
   const goTo = (i) =>
     slideRefs.current[i]?.scrollIntoView({ behavior: reduced ? 'auto' : 'smooth', block: 'start' })
@@ -141,7 +155,12 @@ export default function Feed({
               playing={i === active && playing}
               active={i === active}
               muted={!soundOn}
-              onTime={(p) => i === active && setProgress(p)}
+              onTime={(p) => {
+                if (i === active) {
+                  setProgress(p)
+                  lastProgressRef.current = p
+                }
+              }}
               onEnded={() => active < clips.length - 1 && goTo(active + 1)}
             >
               {/* tap layer: toggle play */}
@@ -174,25 +193,13 @@ export default function Feed({
                   <SubjectTag accent={clip.accent}>{clip.subjectTag}</SubjectTag>
                   <RelevanceBadge score={clip.relevanceScore} />
                 </div>
-                <button
-                  onClick={() => onOpen(i)}
-                  className="font-head block text-left text-[20px] font-semibold leading-7 tracking-[-0.4px] text-white"
-                >
+                <p className="font-head block text-left text-[20px] font-semibold leading-7 tracking-[-0.4px] text-white">
                   {clip.title}
-                </button>
+                </p>
                 <p className="mt-1 text-[14px] leading-5 text-white/80">@{clip.channel}</p>
                 <p className="mt-1.5 line-clamp-2 text-[14px] leading-5 text-white/65">
                   {clip.description}
                 </p>
-                <button
-                  onClick={() => onOpen(i)}
-                  className="mt-3 inline-flex items-center gap-1.5 rounded-full bg-white/15 px-3 py-1.5 text-[13px] font-medium text-white backdrop-blur-sm transition-colors duration-150 ease-geist hover:bg-white/25"
-                >
-                  Open clip
-                  <svg width="13" height="13" viewBox="0 0 24 24" fill="none">
-                    <path d="M9 6l6 6-6 6" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" />
-                  </svg>
-                </button>
               </div>
 
               <div className="absolute inset-x-0 bottom-0 z-20 h-1 bg-white/20">
@@ -208,6 +215,12 @@ export default function Feed({
 
       <div className="pointer-events-none absolute bottom-3 left-4 z-20 font-mono text-[12px] text-white/55">
         {active + 1}/{clips.length} · {scoped ? 'this topic' : 'ranked by score'}
+        {clips[active]?.pGood != null && (
+          <span className="ml-2 text-white/40">
+            · rec g={clips[active].pGood.toFixed(2)} f={clips[active].pFit.toFixed(2)} s=
+            {clips[active].recScore != null ? clips[active].recScore.toFixed(2) : '–'}
+          </span>
+        )}
       </div>
     </div>
   )

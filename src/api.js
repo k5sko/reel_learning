@@ -99,3 +99,57 @@ export async function uploadVideo(file) {
   fd.append('file', file)
   return asJson(await fetch(u('/api/upload'), { method: 'POST', headers: NG, body: fd }))
 }
+
+// --- recsys recommender (mounted in the same /api namespace) ----------------
+
+// Reset the single-user profile to a new set of learning goals (DAG roots).
+export async function recsysSession(goals, { kappa, styleProfile } = {}) {
+  const body = { goals }
+  if (kappa != null) body.kappa = kappa
+  if (styleProfile != null) body.style_profile = styleProfile
+  return asJson(
+    await fetch(u('/api/session'), {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', ...NG },
+      body: JSON.stringify(body),
+    }),
+  )
+}
+
+// Ask the recommender for the next item(s); `exclude` = clip ids already shown.
+export async function recsysRecommend({ exclude = [], n = 1, refresh = false } = {}) {
+  return asJson(
+    await fetch(u('/api/recommend'), {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', ...NG },
+      body: JSON.stringify({ n, exclude, refresh_corpus: refresh }),
+    }),
+  )
+}
+
+// The knowledge graph: every queried goal + its prerequisite DAG + per-node mastery.
+export async function recsysGraph() {
+  return asJson(await fetch(u('/api/graph'), { headers: NG }))
+}
+
+// Onboarding: store the learner's style axes (0..1 each on the STYLE_AXES set).
+export async function recsysOnboard(axes) {
+  return asJson(
+    await fetch(u('/api/onboard'), {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', ...NG },
+      body: JSON.stringify({ axes }),
+    }),
+  )
+}
+
+// Report engagement (watch_ratio / like / save / dislike) or a problem result.
+export async function recsysFeedback(payload) {
+  return asJson(
+    await fetch(u('/api/feedback'), {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', ...NG },
+      body: JSON.stringify(payload),
+    }),
+  )
+}

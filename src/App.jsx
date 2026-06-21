@@ -1,37 +1,14 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
-import { listClips } from './api.js'
+import { listClips, recsysFeedback, recsysOnboard, recsysRecommend, recsysSession } from './api.js'
 import { decorateClip } from './lib/clips.js'
 import { saveLesson } from './lib/memoryApi.js'
 import CreateClips from './screens/CreateClips.jsx'
+import Onboarding from './screens/Onboarding.jsx'
 import Feed from './screens/Feed.jsx'
-import ClipPlayer from './screens/ClipPlayer.jsx'
-import MemoryGraph from './screens/MemoryGraph.jsx'
+import KnowledgeMap from './screens/KnowledgeMap.jsx'
 import Progress from './screens/Progress.jsx'
 import TabBar from './components/TabBar.jsx'
 import Toast from './components/Toast.jsx'
-
-// Empty state for the Watch tab when no clip is selected yet.
-function WatchEmpty({ onGoFeed }) {
-  return (
-    <div className="flex h-full flex-col items-center justify-center gap-4 bg-bg-100 px-8 text-center">
-      <div className="grid h-14 w-14 place-items-center rounded-full border border-gray-a-200 text-gray-700">
-        <svg width="22" height="22" viewBox="0 0 24 24" fill="none">
-          <path d="M8 5.5v13l11-6.5L8 5.5z" stroke="currentColor" strokeWidth="2" strokeLinejoin="round" />
-        </svg>
-      </div>
-      <p className="text-[15px] leading-6 text-gray-900">
-        Nothing playing yet.
-        <br />Pick a clip from your feed to watch.
-      </p>
-      <button
-        onClick={onGoFeed}
-        className="h-10 rounded-sm bg-gray-1000 px-4 text-[14px] font-medium text-bg-100 transition-colors duration-150 ease-geist hover:bg-gray-900"
-      >
-        Go to For You
-      </button>
-    </div>
-  )
-}
 
 export default function App() {
   const [tab, setTab] = useState('learn') // learn | foryou | watch | progress | map
@@ -42,16 +19,33 @@ export default function App() {
   const [toast, setToast] = useState(null)
   const [graphRefresh, setGraphRefresh] = useState(0)
   const [highlightIds, setHighlightIds] = useState([])
+  // First-open style capture seeds P(fit). Persisted so it only shows once.
+  const [needsOnboard, setNeedsOnboard] = useState(() => !localStorage.getItem('rl_onboarded'))
   const returnTab = useRef('foryou') // where the Map tab's close button returns to
 
-  const loadCount = useCallback(async () => {
+  // Recommender state: a library map (id -> raw clip) the recommender's clip_ids resolve against,
+  // a re-entrancy guard for the one-at-a-time fetch, and whether a recsys session is active.
+  const libraryRef = useRef(new Map())
+  const clipsRef = useRef([])
+  const loadingMoreRef = useRef(false)
+  const recsysReadyRef = useRef(false)
+  useEffect(() => {
+    clipsRef.current = clips
+  }, [clips])
+
+  // Refresh the whole-library map (also powers the "Browse library" count).
+  const refreshLibrary = useCallback(async () => {
     try {
       const { clips: all } = await listClips()
+      libraryRef.current = new Map(all.map((c) => [c.id, c]))
       setLibraryCount(all.length)
+      return libraryRef.current
     } catch {
-      setLibraryCount(0)
+      return libraryRef.current
     }
   }, [])
+
+  const loadCount = refreshLibrary
 
   useEffect(() => {
     loadCount()
@@ -69,14 +63,6 @@ export default function App() {
     setScoped(!!jobId)
     setPlayerIndex(0)
     setTab('foryou')
-  }
-
-  const openPlayer = (i) => {
-    setPlayerIndex(i)
-    setTab('watch')
-  }
-  const navigate = (delta) => {
-    setPlayerIndex((i) => Math.min(Math.max(i + delta, 0), clips.length - 1))
   }
 
   const openGraph = useCallback(() => {
@@ -114,6 +100,10 @@ export default function App() {
         description: clip.description,
         interests: clip.tags && clip.tags.length ? clip.tags : [clip.subjectTag],
       })
+      // saving a lesson is a strong positive -> shift the user's style vector toward this clip
+      if (recsysReadyRef.current) {
+        recsysFeedback({ clip_id: clip.id, saved: true }).catch(() => {})
+      }
       setHighlightIds(result.newNodeIds || [])
       setGraphRefresh((n) => n + 1)
       const n = result.addedNodes?.length || 0
@@ -130,7 +120,110 @@ export default function App() {
     setToast({ tone: 'error', message: `Couldn’t save lesson. ${e.message}` })
   }, [])
 
-  const immersive = tab === 'foryou' || tab === 'watch'
+  // Grow the feed by ONE recommender-chosen clip (excludes what's already shown). Called when the
+  // user nears the end of the feed -> the next video is picked by the recommender, one at a time.
+  const appendRecommended = useCallback(async () => {
+    if (loadingMoreRef.current || !recsysReadyRef.current) return
+    loadingMoreRef.current = true
+    try {
+      const shown = clipsRef.current.map((c) => c.id)
+      let rec = await recsysRecommend({ exclude: shown, n: 1 })
+      let item = rec.items && rec.items[0]
+      if (!item) {
+        // corpus may still be processing (auto-query kicked a clip job) -> refresh + retry once
+        await refreshLibrary()
+        rec = await recsysRecommend({ exclude: shown, n: 1, refresh: true })
+        item = rec.items && rec.items[0]
+      }
+      if (!item) return
+      let raw = libraryRef.current.get(item.clip_id)
+      if (!raw) {
+        await refreshLibrary()
+        raw = libraryRef.current.get(item.clip_id)
+      }
+      if (!raw) return
+      const decorated = {
+        ...decorateClip(raw),
+        recsysChannel: item.channel, // uploader (recsys P(fit) key) — distinct from display channel
+        recNode: item.node,
+        pGood: item.p_good,
+        pFit: item.p_fit,
+        recScore: item.score,
+      }
+      setClips((prev) => (prev.some((c) => c.id === decorated.id) ? prev : [...prev, decorated]))
+    } catch {
+      /* recommender optional — leave the feed as-is */
+    } finally {
+      loadingMoreRef.current = false
+    }
+  }, [refreshLibrary])
+
+  // Build the For You feed FROM the recommender (clip 1 onward), ranked across the whole corpus for
+  // the session's goal — not just the session's videos in clipper order. Falls back to the
+  // clipper-ordered feed if the recommender has nothing yet (clips still processing).
+  const decorateRecItem = (it) => {
+    const raw = libraryRef.current.get(it.clip_id)
+    return raw
+      ? {
+          ...decorateClip(raw),
+          recsysChannel: it.channel,
+          recNode: it.node, // DAG node this clip serves -> watch credits its mastery
+          pGood: it.p_good,
+          pFit: it.p_fit,
+          recScore: it.score,
+        }
+      : null
+  }
+  const seedRecsysFeed = useCallback(async (fallbackJobIds, k = 1) => {
+    try {
+      const rec = await recsysRecommend({ exclude: [], n: k })
+      const decorated = (rec.items || []).map(decorateRecItem).filter(Boolean)
+      if (decorated.length) {
+        setClips(decorated)
+        setScoped(true)
+        setPlayerIndex(0)
+        setTab('foryou')
+        return true
+      }
+    } catch {
+      /* fall through to the clipper-ordered feed */
+    }
+    await showFeed(fallbackJobIds)
+    return false
+  }, [refreshLibrary])
+
+  // Report watch engagement for a clip the user scrolled past (moves the user's style vector).
+  const onWatched = useCallback((clip, watchRatio) => {
+    if (!recsysReadyRef.current || !clip) return
+    // clip_id -> style EMA ; node -> mastery credit (advances the DAG)
+    recsysFeedback({ clip_id: clip.id, watch_ratio: watchRatio, node: clip.recNode }).catch(() => {})
+  }, [])
+
+  const completeOnboard = useCallback(async (axes) => {
+    try {
+      await recsysOnboard(axes)
+    } catch {
+      /* recsys optional */
+    }
+    localStorage.setItem('rl_onboarded', '1')
+    setNeedsOnboard(false)
+  }, [])
+  const skipOnboard = useCallback(() => {
+    localStorage.setItem('rl_onboarded', '1')
+    setNeedsOnboard(false)
+  }, [])
+
+  const immersive = tab === 'foryou'
+
+  if (needsOnboard) {
+    return (
+      <div className="flex min-h-full items-center justify-center bg-bg-200 sm:p-6">
+        <div className="relative flex h-[100dvh] w-full max-w-[420px] flex-col overflow-hidden bg-bg-100 sm:h-[860px] sm:rounded-lg sm:border sm:border-gray-a-200 sm:shadow-modal">
+          <Onboarding onComplete={completeOnboard} onSkip={skipOnboard} />
+        </div>
+      </div>
+    )
+  }
 
   return (
     <div className="flex min-h-full items-center justify-center bg-bg-200 sm:p-6">
@@ -140,9 +233,20 @@ export default function App() {
             <CreateClips
               libraryCount={libraryCount}
               onBrowse={() => showFeed(null)}
-              onDone={async (jobId) => {
-                await loadCount()
-                await showFeed(jobId)
+              onDone={async (jobIds, goals) => {
+                await refreshLibrary()
+                recsysReadyRef.current = false
+                if (goals && goals.length) {
+                  try {
+                    await recsysSession(goals)
+                    recsysReadyRef.current = true
+                  } catch {
+                    /* recsys optional */
+                  }
+                }
+                // recsys-ordered feed from clip 1 (falls back to clipper order if empty); else plain feed
+                if (recsysReadyRef.current) await seedRecsysFeed(jobIds, 1)
+                else await showFeed(jobIds)
               }}
             />
           )}
@@ -152,39 +256,20 @@ export default function App() {
               clips={clips}
               scoped={scoped}
               focusIndex={playerIndex}
-              onOpen={openPlayer}
               onEdit={() => setTab('learn')}
               onShowAll={() => showFeed(null)}
               onOpenGraph={openGraph}
               onSaveLesson={handleSaveLesson}
               onSaveError={onSaveError}
+              onNeedMore={appendRecommended}
+              onWatched={onWatched}
             />
           )}
-
-          {tab === 'watch' &&
-            (clips[playerIndex] ? (
-              <ClipPlayer
-                clip={clips[playerIndex]}
-                index={playerIndex}
-                total={clips.length}
-                onClose={() => setTab('foryou')}
-                onNavigate={navigate}
-                onOpenGraph={openGraph}
-                onSaveLesson={handleSaveLesson}
-                onSaveError={onSaveError}
-              />
-            ) : (
-              <WatchEmpty onGoFeed={() => selectTab('foryou')} />
-            ))}
 
           {tab === 'progress' && <Progress onBrowse={() => showFeed(null)} />}
 
           {tab === 'map' && (
-            <MemoryGraph
-              onClose={() => setTab(returnTab.current)}
-              refreshKey={graphRefresh}
-              highlightIds={highlightIds}
-            />
+            <KnowledgeMap onClose={() => setTab(returnTab.current)} refreshKey={graphRefresh} />
           )}
         </div>
 
