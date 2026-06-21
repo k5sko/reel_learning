@@ -34,7 +34,14 @@ from .db import Clip, ClipStatus, Job, init_db, session_scope
 from .finder import find_video
 from .llm import LLMClient
 from .pipeline import orchestrator
+from .questionnaire import generate_questions, plan_videos
 from .storage import get_storage, read_json
+
+# Cap how many videos clip concurrently. Virtual clips removed the ffmpeg render
+# bottleneck, so the real limit is LLM API rate (each job fans out up to
+# llm_concurrency label calls). 3 keeps peak Anthropic concurrency reasonable.
+MAX_CONCURRENT_JOBS = 3
+_job_semaphore = asyncio.Semaphore(MAX_CONCURRENT_JOBS)
 
 
 @asynccontextmanager
@@ -93,14 +100,16 @@ def _shape(clip: Clip, channel: str) -> dict:
 
 @app.get("/api/clips")
 def list_clips(job_id: Optional[str] = None):
-    """Ready clips ranked by score. Pass job_id to scope to one video's clips
-    (so a topic search shows only that topic, hiding the rest of the library)."""
+    """Ready clips ranked by score. Pass job_id to scope to one video's clips,
+    or a comma-separated list of job ids to scope to a multi-video learning
+    session (so a topic search shows only those videos, hiding the rest)."""
     storage = get_storage()
     cache: dict = {}
     with session_scope() as s:
         stmt = select(Clip).where(Clip.status == ClipStatus.READY)
         if job_id:
-            stmt = stmt.where(Clip.job_id == job_id)
+            ids = [x for x in job_id.split(",") if x]
+            stmt = stmt.where(Clip.job_id.in_(ids)) if len(ids) > 1 else stmt.where(Clip.job_id == ids[0])
         clips = s.exec(stmt).all()
         jobs = {j.id: j for j in s.exec(select(Job)).all()}
         clips = sorted(clips, key=lambda c: c.score, reverse=True)
@@ -164,6 +173,73 @@ async def search_topic(body: SearchIn):
     job_id = orchestrator.create_job(video["url"])
     asyncio.create_task(_run_job(job_id))
     return {"status": "found", "job_id": job_id, "video": video, "reason": result.get("reason", "")}
+
+
+# --- topic intake questionnaire -> multi-video learning plan ----------------
+
+
+async def _run_job_capped(job_id: str) -> None:
+    """Run a pipeline job behind the global concurrency cap."""
+    async with _job_semaphore:
+        await _run_job(job_id)
+
+
+class QuestionnaireIn(BaseModel):
+    topic: str
+
+
+@app.post("/api/questionnaire")
+async def questionnaire(body: QuestionnaireIn):
+    """Topic -> a short flashcard quiz (LLM-generated, topic-specific), or a
+    clarification prompt if the topic is too broad."""
+    topic = (body.topic or "").strip()
+    if not topic:
+        raise HTTPException(400, "topic is required")
+    return await asyncio.to_thread(generate_questions, topic, LLMClient())
+
+
+class LearnIn(BaseModel):
+    topic: str
+    answers: dict = {}
+
+
+@app.post("/api/learn")
+async def learn(body: LearnIn):
+    """Questionnaire answers -> reason into several targeted search queries ->
+    find a video for each (concurrently) -> kick off clipping jobs concurrently.
+    Returns the started jobs so the client can poll them all."""
+    topic = (body.topic or "").strip()
+    if not topic:
+        raise HTTPException(400, "topic is required")
+    llm = LLMClient()
+
+    plan = await asyncio.to_thread(plan_videos, topic, body.answers, llm)
+    queries = plan["queries"]
+
+    # Find a video per query, concurrently.
+    finds = await asyncio.gather(*[asyncio.to_thread(_find, q["query"], llm) for q in queries])
+
+    jobs = []
+    seen = set()
+    for q, r in zip(queries, finds):
+        if not r or r.get("status") != "found":
+            continue
+        video = r["video"]
+        if video["id"] in seen:
+            continue
+        seen.add(video["id"])
+        job_id = orchestrator.create_job(video["url"])
+        asyncio.create_task(_run_job_capped(job_id))
+        jobs.append({"job_id": job_id, "video": video, "query": q["query"], "why": q.get("why", "")})
+
+    if not jobs:
+        return {"status": "not_found", "message": f"Couldn't find videos for {topic!r} on the available channels."}
+    return {"status": "started", "profile": plan["profile"], "jobs": jobs}
+
+
+def _find(query: str, llm: LLMClient) -> dict:
+    """find_video with the planner's already-specific queries (skip broad check)."""
+    return find_video(query, llm, assume_specific=True)
 
 
 @app.post("/api/upload")

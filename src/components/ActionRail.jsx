@@ -1,6 +1,7 @@
 import { useState } from 'react'
 
-// Reels-style vertical action rail. Cosmetic mock — local toggles only.
+// Reels-style vertical action rail. Like/Comment/Share are cosmetic; "Commit to
+// memory" is real — it runs the memory-graph save pipeline for this clip.
 function RailButton({ label, count, active, activeColor, onClick, children }) {
   return (
     <button
@@ -76,10 +77,10 @@ export default function ActionRail({ clip, onSaveLesson, onSaveError }) {
       </RailButton>
 
       <RailButton
-        label="Save lesson to memory"
-        count={saving ? 'Saving…' : saved ? 'Saved' : 'Save'}
+        label="Commit to memory"
+        count={saving ? 'Saving…' : saved ? 'Saved ✓' : 'Memory'}
         active={saved}
-        activeColor="text-amber-700"
+        activeColor="text-blue-700"
         onClick={onSave}
       >
         {saving ? (
@@ -87,8 +88,12 @@ export default function ActionRail({ clip, onSaveLesson, onSaveError }) {
             <path d="M12 3a9 9 0 1 0 9 9" stroke="currentColor" strokeWidth="2" strokeLinecap="round" />
           </svg>
         ) : (
-          <svg width="20" height="20" viewBox="0 0 24 24" fill={saved ? 'currentColor' : 'none'} className={saved ? 'animate-pop' : ''}>
-            <path d="M6 3h12v18l-6-4-6 4z" stroke="currentColor" strokeWidth="2" strokeLinejoin="round" />
+          // memory-graph glyph — matches the Memory button + graph screen
+          <svg width="21" height="21" viewBox="0 0 24 24" fill="none" className={saved ? 'animate-pop' : ''}>
+            <circle cx="6" cy="6" r="2.5" stroke="currentColor" strokeWidth="2" fill={saved ? 'currentColor' : 'none'} />
+            <circle cx="18" cy="9" r="2.5" stroke="currentColor" strokeWidth="2" fill={saved ? 'currentColor' : 'none'} />
+            <circle cx="9" cy="18" r="2.5" stroke="currentColor" strokeWidth="2" fill={saved ? 'currentColor' : 'none'} />
+            <path d="M8 7.5l8 1M8 8l1 8" stroke="currentColor" strokeWidth="2" strokeLinecap="round" />
           </svg>
         )}
       </RailButton>

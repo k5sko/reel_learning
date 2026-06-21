@@ -17,4 +17,20 @@ VETTED_CHANNELS = [
             "chemistry", "organic chemistry", "physics",
         ],
     },
+    {
+        "name": "3Blue1Brown",
+        "url": "https://www.youtube.com/@3blue1brown",
+        "subjects": [
+            "linear algebra", "eigenvalues", "calculus", "neural networks",
+            "probability", "topology", "math intuition", "fourier",
+        ],
+    },
+    {
+        "name": "Khan Academy",
+        "url": "https://www.youtube.com/@khanacademy",
+        "subjects": [
+            "math", "algebra", "calculus", "linear algebra", "statistics",
+            "biology", "chemistry", "physics", "economics", "finance",
+        ],
+    },
 ]

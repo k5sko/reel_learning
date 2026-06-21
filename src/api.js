@@ -15,8 +15,32 @@ async function asJson(res) {
 }
 
 export async function listClips(jobId) {
-  const q = jobId ? `?job_id=${encodeURIComponent(jobId)}` : ''
+  // jobId may be a single id, an array of ids (multi-video session), or null.
+  const ids = Array.isArray(jobId) ? jobId.join(',') : jobId
+  const q = ids ? `?job_id=${encodeURIComponent(ids)}` : ''
   return asJson(await fetch(`/api/clips${q}`))
+}
+
+// Topic -> tailored flashcard questions (or a clarification prompt).
+export async function getQuestionnaire(topic) {
+  return asJson(
+    await fetch('/api/questionnaire', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ topic }),
+    }),
+  )
+}
+
+// Questionnaire answers -> a multi-video learning plan + started clipping jobs.
+export async function startLearning(topic, answers) {
+  return asJson(
+    await fetch('/api/learn', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ topic, answers }),
+    }),
+  )
 }
 
 export async function createJob(url) {

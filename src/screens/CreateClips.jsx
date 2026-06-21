@@ -1,10 +1,10 @@
 import { useEffect, useRef, useState } from 'react'
-import { createJob, getJob, searchTopic, uploadVideo } from '../api.js'
+import { createJob, getJob, getQuestionnaire, startLearning, uploadVideo } from '../api.js'
 import JobProgress from '../components/JobProgress.jsx'
+import Questionnaire from './Questionnaire.jsx'
 
-// Screen 1 — three ways in: search a topic (finds a vetted-channel video),
-// paste a YouTube link, or upload an MP4. A stepped progress bar shows exactly
-// what the pipeline is doing and which stage failed.
+// Screen 1 — three ways in. Topic runs a short flashcard intake, then fetches +
+// clips MULTIPLE targeted videos concurrently. YouTube link / Upload do one video.
 const MODES = [
   { id: 'topic', label: 'Topic' },
   { id: 'youtube', label: 'YouTube link' },
@@ -17,112 +17,152 @@ export default function CreateClips({ libraryCount = 0, onDone, onBrowse }) {
   const [url, setUrl] = useState('')
   const [file, setFile] = useState(null)
 
-  const [busy, setBusy] = useState(false)
-  const [stage, setStage] = useState(null)
-  const [jobStarted, setJobStarted] = useState(false)
+  const [phase, setPhase] = useState('input') // input | quiz | work
+  const [loadingQuiz, setLoadingQuiz] = useState(false)
+  const [questions, setQuestions] = useState([])
+  const [jobs, setJobs] = useState([]) // [{job_id, video?, query?, stage, error}]
+  const [profile, setProfile] = useState('')
   const [error, setError] = useState(null)
-  const [clarify, setClarify] = useState(null) // {message, suggestions}
-  const [found, setFound] = useState(null) // {title, channel}
+  const [clarify, setClarify] = useState(null)
   const cancelled = useRef(false)
 
   useEffect(() => {
-    // Reset on (re)mount so React StrictMode's mount→unmount→remount in dev
-    // doesn't leave the flag stuck true and freeze polling.
+    // Reset on (re)mount so StrictMode's mount→unmount→remount doesn't freeze polling.
     cancelled.current = false
     return () => {
       cancelled.current = true
     }
   }, [])
   const sleep = (ms) => new Promise((r) => setTimeout(r, ms))
-
-  const reset = () => {
+  const resetTransient = () => {
     setError(null)
     setClarify(null)
-    setFound(null)
-    setJobStarted(false)
-    setStage(null)
-    setBusy(true)
   }
-  const stop = () => setBusy(false)
 
-  const pollJob = async (jobId) => {
-    setStage('queued')
+  // Poll N jobs until all settle, then show the feed of the ones that succeeded.
+  const pollJobs = async (initial) => {
+    let live = initial.map((j) => ({ ...j, stage: 'queued', error: null }))
+    setJobs(live)
+    setProfile((p) => p) // keep
+    setPhase('work')
     while (!cancelled.current) {
       await sleep(2000)
-      const job = await getJob(jobId)
-      if (job.status === 'done') {
-        setStage('done')
-        if (!cancelled.current) await onDone(jobId)
+      live = await Promise.all(
+        live.map(async (j) => {
+          if (j.stage === 'done' || j.error) return j
+          try {
+            const s = await getJob(j.job_id)
+            return { ...j, stage: s.status, clips: s.clips || 0, error: s.status === 'error' ? s.error || 'failed' : null }
+          } catch {
+            return j
+          }
+        }),
+      )
+      if (cancelled.current) return
+      setJobs([...live])
+      // Auto-advance once every job has settled (done or errored).
+      if (live.every((j) => j.stage === 'done' || j.error)) {
+        if (live.some((j) => j.stage === 'done')) await onDone(live.map((j) => j.job_id))
+        else setError('Every video failed to process. See the stages above.')
         return
       }
-      if (job.status === 'error') {
-        setError(job.error || 'The job failed.') // keep last live stage so it shows as failed
-        return stop()
-      }
-      setStage(job.status)
     }
   }
 
-  const runTopic = async (override) => {
+  // --- topic flow: questionnaire -> plan -> multiple videos ---
+  const startTopic = async (override) => {
     const q = (override ?? topic).trim()
-    if (!q || busy) return
+    if (!q || phase !== 'input' || loadingQuiz) return
     if (override) setTopic(override)
-    reset()
-    setStage('searching')
+    resetTransient()
+    setLoadingQuiz(true)
     try {
-      const r = await searchTopic(q)
+      const r = await getQuestionnaire(q)
       if (r.status === 'needs_clarification') {
         setClarify({ message: r.message, suggestions: r.suggestions || [] })
-        return stop()
+      } else if (r.status === 'questions' && r.questions?.length) {
+        setQuestions(r.questions)
+        setPhase('quiz')
+      } else {
+        setError(r.message || 'Could not prepare questions for that topic.')
       }
-      if (r.status !== 'found') {
-        setError(r.message || 'No matching video found.')
-        return stop()
-      }
-      setFound(r.video)
-      setJobStarted(true)
-      await pollJob(r.job_id)
     } catch (e) {
       setError(String(e.message || e))
-      stop()
+    }
+    setLoadingQuiz(false)
+  }
+
+  const onQuizComplete = async (answers) => {
+    resetTransient()
+    setJobs([])
+    setProfile('')
+    setPhase('work')
+    try {
+      const r = await startLearning(topic, answers)
+      if (r.status !== 'started' || !r.jobs?.length) {
+        setError(r.message || 'No matching videos found for that.')
+        setPhase('input')
+        return
+      }
+      setProfile(r.profile || '')
+      await pollJobs(r.jobs)
+    } catch (e) {
+      setError(String(e.message || e))
+      setPhase('input')
     }
   }
 
+  // --- youtube / upload: single video ---
   const runUrl = async () => {
     const u = url.trim()
-    if (!u || busy) return
-    reset()
-    setStage('queued')
+    if (!u || phase !== 'input') return
+    resetTransient()
     try {
       const { job_id } = await createJob(u)
-      setJobStarted(true)
-      await pollJob(job_id)
+      await pollJobs([{ job_id }])
     } catch (e) {
       setError(String(e.message || e))
-      stop()
+      setPhase('input')
+    }
+  }
+  const runUpload = async () => {
+    if (!file || phase !== 'input') return
+    resetTransient()
+    try {
+      const { job_id } = await uploadVideo(file)
+      await pollJobs([{ job_id, video: { title: file.name } }])
+    } catch (e) {
+      setError(String(e.message || e))
+      setPhase('input')
     }
   }
 
-  const runUpload = async () => {
-    if (!file || busy) return
-    reset()
-    setStage('uploading')
-    try {
-      const { job_id } = await uploadVideo(file)
-      setJobStarted(true)
-      await pollJob(job_id)
-    } catch (e) {
-      setError(String(e.message || e))
-      stop()
-    }
+  const restart = () => {
+    setPhase('input')
+    setJobs([])
+    setProfile('')
+    setQuestions([])
+    resetTransient()
   }
+
+  // Jump to the feed for this session's videos without waiting for every job —
+  // shows whatever clips are ready (a slow/stuck video won't block the rest).
+  const openClipsNow = () => onDone(jobs.map((j) => j.job_id))
 
   const keyHint =
     error && /api_key|x-api-key|authentication|401|ANTHROPIC|GROQ/i.test(error)
       ? 'An API key may be missing/invalid — check ANTHROPIC_API_KEY (and GROQ_API_KEY if using Groq) in clipper/.env, then restart the backend.'
       : null
 
-  const showProgress = busy || (error && jobStarted)
+  // Full-screen flashcard intake.
+  if (phase === 'quiz') {
+    return (
+      <Questionnaire topic={topic} questions={questions} onComplete={onQuizComplete} onBack={restart} />
+    )
+  }
+
+  const progressMode = mode === 'upload' ? 'upload' : 'youtube'
+  const allFailed = phase === 'work' && jobs.length > 0 && jobs.every((j) => j.error)
 
   return (
     <div className="relative flex h-full flex-col overflow-hidden">
@@ -141,141 +181,196 @@ export default function CreateClips({ libraryCount = 0, onDone, onBrowse }) {
           </h1>
         </header>
 
-        {/* mode tabs */}
-        <div className="mb-4 flex gap-1 rounded-md bg-gray-100 p-1">
-          {MODES.map((m) => (
-            <button
-              key={m.id}
-              onClick={() => !busy && setMode(m.id)}
-              disabled={busy}
-              className={`h-9 flex-1 rounded-sm text-[13px] font-medium transition-colors duration-150 ease-geist disabled:opacity-50 ${
-                mode === m.id ? 'bg-bg-100 text-gray-1000 shadow-raised' : 'text-gray-900 hover:text-gray-1000'
-              }`}
-            >
-              {m.label}
-            </button>
-          ))}
-        </div>
-
-        {/* TOPIC */}
-        {mode === 'topic' && (
+        {phase === 'input' && (
           <>
-            <div className="flex gap-2">
-              <input
-                value={topic}
-                onChange={(e) => setTopic(e.target.value)}
-                onKeyDown={(e) => e.key === 'Enter' && runTopic()}
-                placeholder="What do you want to learn? e.g. the chain rule"
-                disabled={busy}
-                className="h-12 flex-1 rounded-sm border border-gray-a-400 bg-bg-100 px-3 text-[16px] leading-5 text-gray-1000 shadow-raised placeholder:text-gray-700 disabled:bg-gray-100"
-              />
-              <button
-                onClick={() => runTopic()}
-                disabled={!topic.trim() || busy}
-                className="h-12 rounded-sm bg-gray-1000 px-4 text-[16px] font-medium text-bg-100 transition-colors duration-150 ease-geist hover:bg-gray-900 disabled:bg-gray-100 disabled:text-gray-700"
-              >
-                Find
-              </button>
+            {/* mode tabs */}
+            <div className="mb-4 flex gap-1 rounded-md bg-gray-100 p-1">
+              {MODES.map((m) => (
+                <button
+                  key={m.id}
+                  onClick={() => !loadingQuiz && setMode(m.id)}
+                  disabled={loadingQuiz}
+                  className={`h-9 flex-1 rounded-sm text-[13px] font-medium transition-colors duration-150 ease-geist disabled:opacity-50 ${
+                    mode === m.id ? 'bg-bg-100 text-gray-1000 shadow-raised' : 'text-gray-900 hover:text-gray-1000'
+                  }`}
+                >
+                  {m.label}
+                </button>
+              ))}
             </div>
-            <p className="mt-2 text-[12px] leading-4 text-gray-700">
-              Searches pre-vetted channels for a focused video, then clips it.
-            </p>
+
+            {mode === 'topic' && (
+              <>
+                <div className="flex gap-2">
+                  <input
+                    value={topic}
+                    onChange={(e) => setTopic(e.target.value)}
+                    onKeyDown={(e) => e.key === 'Enter' && startTopic()}
+                    placeholder="What do you want to learn? e.g. the chain rule"
+                    disabled={loadingQuiz}
+                    className="h-12 flex-1 rounded-sm border border-gray-a-400 bg-bg-100 px-3 text-[16px] leading-5 text-gray-1000 shadow-raised placeholder:text-gray-700 disabled:bg-gray-100"
+                  />
+                  <button
+                    onClick={() => startTopic()}
+                    disabled={!topic.trim() || loadingQuiz}
+                    className="h-12 rounded-sm bg-gray-1000 px-4 text-[16px] font-medium text-bg-100 transition-colors duration-150 ease-geist hover:bg-gray-900 disabled:bg-gray-100 disabled:text-gray-700"
+                  >
+                    {loadingQuiz ? '…' : 'Start'}
+                  </button>
+                </div>
+                <p className="mt-2 text-[12px] leading-4 text-gray-700">
+                  A few quick questions, then we fetch & clip several targeted videos.
+                </p>
+              </>
+            )}
+
+            {mode === 'youtube' && (
+              <div className="flex gap-2">
+                <input
+                  value={url}
+                  onChange={(e) => setUrl(e.target.value)}
+                  onKeyDown={(e) => e.key === 'Enter' && runUrl()}
+                  placeholder="https://youtube.com/watch?v=…"
+                  className="h-12 flex-1 rounded-sm border border-gray-a-400 bg-bg-100 px-3 text-[16px] leading-5 text-gray-1000 shadow-raised placeholder:text-gray-700"
+                />
+                <button
+                  onClick={runUrl}
+                  disabled={!url.trim()}
+                  className="h-12 rounded-sm bg-gray-1000 px-4 text-[16px] font-medium text-bg-100 transition-colors duration-150 ease-geist hover:bg-gray-900 disabled:bg-gray-100 disabled:text-gray-700"
+                >
+                  Generate
+                </button>
+              </div>
+            )}
+
+            {mode === 'upload' && (
+              <div className="flex flex-col gap-2">
+                <label className="flex h-24 cursor-pointer items-center justify-center rounded-md border border-dashed border-gray-a-400 bg-bg-100 text-center text-[14px] text-gray-900 hover:bg-gray-100">
+                  <input
+                    type="file"
+                    accept="video/mp4,video/*"
+                    onChange={(e) => setFile(e.target.files?.[0] || null)}
+                    className="hidden"
+                  />
+                  {file ? `Selected: ${file.name}` : 'Choose an MP4 file…'}
+                </label>
+                <button
+                  onClick={runUpload}
+                  disabled={!file}
+                  className="h-12 rounded-sm bg-gray-1000 px-4 text-[16px] font-medium text-bg-100 transition-colors duration-150 ease-geist hover:bg-gray-900 disabled:bg-gray-100 disabled:text-gray-700"
+                >
+                  Generate
+                </button>
+              </div>
+            )}
+
+            <div className="mt-5 flex-1 overflow-y-auto no-scrollbar">
+              {loadingQuiz && (
+                <div className="flex items-center gap-3 rounded-md border border-gray-a-200 bg-bg-100 p-4 shadow-raised">
+                  <span className="h-4 w-4 animate-spin rounded-full border-2 border-gray-300 border-t-gray-1000" />
+                  <p className="text-[14px] font-medium text-gray-1000">Tailoring a few questions…</p>
+                </div>
+              )}
+
+              {clarify && (
+                <div className="rounded-md border border-amber-400 bg-amber-100 p-4">
+                  <p className="text-[14px] leading-5 text-amber-900">{clarify.message}</p>
+                  {clarify.suggestions.length > 0 && (
+                    <div className="mt-2.5 flex flex-wrap gap-2">
+                      {clarify.suggestions.map((s) => (
+                        <button
+                          key={s}
+                          onClick={() => startTopic(s)}
+                          className="rounded-full border border-amber-600/40 bg-bg-100 px-3 py-1 text-[13px] text-amber-900 transition-colors duration-150 ease-geist hover:bg-amber-100"
+                        >
+                          {s}
+                        </button>
+                      ))}
+                    </div>
+                  )}
+                </div>
+              )}
+
+              {error && (
+                <div className="rounded-md border border-red-400 bg-red-100 p-4">
+                  <p className="text-[14px] font-medium text-red-900">Couldn’t start</p>
+                  <p className="mt-1 break-words text-[13px] leading-5 text-red-900/90">{error}</p>
+                  {keyHint && <p className="mt-2 text-[13px] leading-5 text-red-900/90">{keyHint}</p>}
+                </div>
+              )}
+            </div>
           </>
         )}
 
-        {/* YOUTUBE */}
-        {mode === 'youtube' && (
-          <div className="flex gap-2">
-            <input
-              value={url}
-              onChange={(e) => setUrl(e.target.value)}
-              onKeyDown={(e) => e.key === 'Enter' && runUrl()}
-              placeholder="https://youtube.com/watch?v=…"
-              disabled={busy}
-              className="h-12 flex-1 rounded-sm border border-gray-a-400 bg-bg-100 px-3 text-[16px] leading-5 text-gray-1000 shadow-raised placeholder:text-gray-700 disabled:bg-gray-100"
-            />
-            <button
-              onClick={runUrl}
-              disabled={!url.trim() || busy}
-              className="h-12 rounded-sm bg-gray-1000 px-4 text-[16px] font-medium text-bg-100 transition-colors duration-150 ease-geist hover:bg-gray-900 disabled:bg-gray-100 disabled:text-gray-700"
-            >
-              Generate
-            </button>
-          </div>
-        )}
-
-        {/* UPLOAD */}
-        {mode === 'upload' && (
-          <div className="flex flex-col gap-2">
-            <label className="flex h-24 cursor-pointer items-center justify-center rounded-md border border-dashed border-gray-a-400 bg-bg-100 text-center text-[14px] text-gray-900 hover:bg-gray-100">
-              <input
-                type="file"
-                accept="video/mp4,video/*"
-                disabled={busy}
-                onChange={(e) => setFile(e.target.files?.[0] || null)}
-                className="hidden"
-              />
-              {file ? `Selected: ${file.name}` : 'Choose an MP4 file…'}
-            </label>
-            <button
-              onClick={runUpload}
-              disabled={!file || busy}
-              className="h-12 rounded-sm bg-gray-1000 px-4 text-[16px] font-medium text-bg-100 transition-colors duration-150 ease-geist hover:bg-gray-900 disabled:bg-gray-100 disabled:text-gray-700"
-            >
-              Generate
-            </button>
-          </div>
-        )}
-
-        {/* status area */}
-        <div className="mt-5 flex-1 overflow-y-auto no-scrollbar">
-          {found && (
-            <p className="mb-3 text-[13px] leading-5 text-gray-900">
-              Found <span className="font-medium text-gray-1000">“{found.title}”</span> — {found.channel}
+        {phase === 'work' && (
+          <div className="mt-1 flex flex-1 flex-col overflow-y-auto no-scrollbar">
+            <p className="mb-1 font-mono text-[12px] uppercase tracking-wide text-gray-700">
+              {jobs.length === 0
+                ? `Finding videos for “${topic}”`
+                : `Building your feed · ${jobs.length} video${jobs.length === 1 ? '' : 's'}`}
             </p>
-          )}
+            {profile && <p className="mb-4 text-[14px] leading-5 text-gray-900">{profile}</p>}
 
-          {showProgress && (
-            <>
-              <JobProgress mode={mode} stage={stage} error={error && jobStarted ? error : null} />
-              {error && jobStarted && (
-                <div className="mt-3 rounded-md border border-red-400 bg-red-100 p-3">
-                  <p className="break-words text-[13px] leading-5 text-red-900/90">{error}</p>
-                  {keyHint && <p className="mt-1.5 text-[13px] leading-5 text-red-900/90">{keyHint}</p>}
+            {jobs.length === 0 && !error && (
+              <div className="flex items-center gap-3 rounded-md border border-gray-a-200 bg-bg-100 p-4 shadow-raised">
+                <span className="h-4 w-4 animate-spin rounded-full border-2 border-gray-300 border-t-gray-1000" />
+                <p className="text-[14px] font-medium text-gray-1000">
+                  Searching channels & picking the best videos…
+                </p>
+              </div>
+            )}
+
+            <div className="flex flex-col gap-3.5">
+              {jobs.map((j, i) => (
+                <div key={j.job_id}>
+                  <div className="mb-1.5 flex items-center gap-2">
+                    <span className="grid h-5 w-5 shrink-0 place-items-center rounded-full bg-gray-1000 text-[11px] font-semibold text-bg-100">
+                      {i + 1}
+                    </span>
+                    <span className="truncate text-[14px] font-medium text-gray-1000">
+                      {j.video?.title || 'Video'}
+                    </span>
+                  </div>
+                  <JobProgress mode={progressMode} stage={j.stage} error={j.error} />
                 </div>
-              )}
-            </>
-          )}
-
-          {clarify && (
-            <div className="rounded-md border border-amber-400 bg-amber-100 p-4">
-              <p className="text-[14px] leading-5 text-amber-900">{clarify.message}</p>
-              {clarify.suggestions.length > 0 && (
-                <div className="mt-2.5 flex flex-wrap gap-2">
-                  {clarify.suggestions.map((s) => (
-                    <button
-                      key={s}
-                      onClick={() => runTopic(s)}
-                      className="rounded-full border border-amber-600/40 bg-bg-100 px-3 py-1 text-[13px] text-amber-900 transition-colors duration-150 ease-geist hover:bg-amber-100"
-                    >
-                      {s}
-                    </button>
-                  ))}
-                </div>
-              )}
+              ))}
             </div>
-          )}
 
-          {error && !jobStarted && (
-            <div className="rounded-md border border-red-400 bg-red-100 p-4">
-              <p className="text-[14px] font-medium text-red-900">Couldn’t start</p>
-              <p className="mt-1 break-words text-[13px] leading-5 text-red-900/90">{error}</p>
-              {keyHint && <p className="mt-2 text-[13px] leading-5 text-red-900/90">{keyHint}</p>}
-            </div>
-          )}
-        </div>
+            {error && (
+              <div className="mt-3 rounded-md border border-red-400 bg-red-100 p-3">
+                <p className="break-words text-[13px] leading-5 text-red-900/90">{error}</p>
+                {keyHint && <p className="mt-1.5 text-[13px] leading-5 text-red-900/90">{keyHint}</p>}
+              </div>
+            )}
 
-        {libraryCount > 0 && !busy && (
+            {/* Jump in as soon as any clips are ready — no waiting on a slow video */}
+            {jobs.some((j) => (j.clips || 0) > 0 || j.stage === 'done') && (
+              <button
+                onClick={openClipsNow}
+                className="mt-4 flex h-12 w-full items-center justify-center gap-2 rounded-sm bg-gray-1000 text-[16px] font-medium text-bg-100 transition-colors duration-150 ease-geist hover:bg-gray-900"
+              >
+                Open clips
+                <span className="rounded-full bg-bg-100/20 px-2 py-0.5 font-mono text-[12px]">
+                  {jobs.reduce((n, j) => n + (j.clips || 0), 0)}
+                </span>
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none">
+                  <path d="M9 6l6 6-6 6" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" />
+                </svg>
+              </button>
+            )}
+
+            {allFailed && (
+              <button
+                onClick={restart}
+                className="mt-4 h-11 rounded-sm border border-gray-a-400 bg-bg-100 text-[15px] font-medium text-gray-1000 hover:bg-gray-100"
+              >
+                Try a different topic
+              </button>
+            )}
+          </div>
+        )}
+
+        {libraryCount > 0 && phase === 'input' && !loadingQuiz && (
           <button
             onClick={onBrowse}
             className="flex h-12 w-full items-center justify-center gap-2 rounded-sm border border-gray-a-400 bg-bg-100 text-[16px] font-medium text-gray-1000 transition-colors duration-150 ease-geist hover:bg-gray-100"

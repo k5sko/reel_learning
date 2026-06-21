@@ -76,7 +76,7 @@ export default function App() {
       setGraphRefresh((n) => n + 1)
       const n = result.addedNodes?.length || 0
       setToast({
-        message: `Lesson saved · ${n} memory point${n === 1 ? '' : 's'} added`,
+        message: `Committed to memory · ${n} point${n === 1 ? '' : 's'} added`,
         action: { label: 'View Graph', onClick: openGraph },
       })
       return result

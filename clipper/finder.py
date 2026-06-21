@@ -121,21 +121,27 @@ def find_video(
     llm: LLMClient,
     channels: Optional[List[dict]] = None,
     search_fn: Callable[[str, dict, int], List[dict]] = search_channel_videos,
+    assume_specific: bool = False,
 ) -> dict:
     channels = channels if channels is not None else VETTED_CHANNELS
 
-    spec = assess_specificity(query, llm)
-    if not spec["specific"]:
-        return {
-            "status": "needs_clarification",
-            "message": spec["message"] or "That's a bit broad — can you be more specific?",
-            "suggestions": spec["suggestions"],
-        }
+    # The planner already emits specific queries, so skip the broad/narrow check.
+    if assume_specific:
+        search_query = query
+    else:
+        spec = assess_specificity(query, llm)
+        if not spec["specific"]:
+            return {
+                "status": "needs_clarification",
+                "message": spec["message"] or "That's a bit broad — can you be more specific?",
+                "suggestions": spec["suggestions"],
+            }
+        search_query = spec["search_query"]
 
     candidates: List[dict] = []
     for ch in channels:
         try:
-            candidates.extend(search_fn(spec["search_query"], ch, 6))
+            candidates.extend(search_fn(search_query, ch, 6))
         except Exception:
             continue
     if not candidates:
