@@ -1,0 +1,35 @@
+{
+  "language": "en",
+  "duration": 10.4,
+  "segments": [
+    {
+      "id": 0,
+      "start": 0.0,
+      "end": 10.4,
+      "text": "Welcome to the show. Today we talk about focus. Focus is a skill. You can train it daily. Thanks for watching.",
+      "words": [
+        {"word": "Welcome", "start": 0.0, "end": 0.5},
+        {"word": " to", "start": 0.55, "end": 0.7},
+        {"word": " the", "start": 0.75, "end": 0.9},
+        {"word": " show.", "start": 0.95, "end": 1.4},
+        {"word": " Today", "start": 2.0, "end": 2.4},
+        {"word": " we", "start": 2.45, "end": 2.6},
+        {"word": " talk", "start": 2.65, "end": 2.9},
+        {"word": " about", "start": 2.95, "end": 3.2},
+        {"word": " focus.", "start": 3.25, "end": 3.8},
+        {"word": " Focus", "start": 4.6, "end": 5.0},
+        {"word": " is", "start": 5.05, "end": 5.2},
+        {"word": " a", "start": 5.25, "end": 5.35},
+        {"word": " skill.", "start": 5.4, "end": 5.9},
+        {"word": " You", "start": 6.7, "end": 6.9},
+        {"word": " can", "start": 6.95, "end": 7.1},
+        {"word": " train", "start": 7.15, "end": 7.5},
+        {"word": " it", "start": 7.55, "end": 7.7},
+        {"word": " daily.", "start": 7.75, "end": 8.3},
+        {"word": " Thanks", "start": 9.2, "end": 9.6},
+        {"word": " for", "start": 9.65, "end": 9.8},
+        {"word": " watching.", "start": 9.85, "end": 10.4}
+      ]
+    }
+  ]
+}

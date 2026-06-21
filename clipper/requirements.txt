@@ -1,0 +1,30 @@
+# Clipper stage dependencies. Target runtime: Python 3.11 (verified on 3.9.6).
+# Pinned to versions verified installed in this project's venv.
+
+# --- core ---
+sqlmodel==0.0.34
+pydantic-settings==2.11.0
+anthropic==0.111.0
+python-dotenv==1.2.1
+
+# --- ingest / transcribe ---
+yt-dlp==2025.10.14
+faster-whisper==1.2.1
+
+# --- API (frontend bridge) ---
+fastapi==0.128.8
+uvicorn[standard]==0.39.0
+
+# --- tests ---
+pytest==8.4.2
+
+# --- local-dev convenience: bundles a static ffmpeg/ffprobe so no system
+#     install is needed. In production prefer a system ffmpeg on PATH; config.py
+#     defers to it (static-ffmpeg is registered weakly). Safe to drop if ffmpeg
+#     is installed system-wide. ---
+static-ffmpeg==3.0
+
+# System binaries: ffmpeg, ffprobe, yt-dlp must be resolvable on PATH.
+#   - static-ffmpeg (above) provides ffmpeg/ffprobe for local dev.
+#   - yt-dlp installs a console script into the venv bin (config.py adds it to PATH).
+#   - Production: `apt-get install ffmpeg` / `brew install ffmpeg` instead of static-ffmpeg.
