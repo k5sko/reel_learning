@@ -9,6 +9,7 @@ JSON without code fences; ``_strip_fences`` remains as a defensive fallback.
 from __future__ import annotations
 
 import json
+import threading
 from typing import Any, Optional
 
 from .config import get_settings
@@ -46,18 +47,23 @@ class LLMClient:
         self._effort = s.llm_effort
         self._api_key = api_key or s.anthropic_api_key
         self._client = None  # lazy: don't construct the SDK until first call
+        self._lock = threading.Lock()
 
     def _ensure_client(self):
+        # Double-checked locking so concurrent label/segment threads share one
+        # client (the Anthropic SDK is safe to reuse across threads).
         if self._client is None:
-            try:
-                import anthropic
-            except ImportError as e:  # pragma: no cover
-                raise LLMError("anthropic SDK not installed; `pip install anthropic`") from e
-            self._client = (
-                anthropic.Anthropic(api_key=self._api_key)
-                if self._api_key
-                else anthropic.Anthropic()
-            )
+            with self._lock:
+                if self._client is None:
+                    try:
+                        import anthropic
+                    except ImportError as e:  # pragma: no cover
+                        raise LLMError("anthropic SDK not installed; `pip install anthropic`") from e
+                    self._client = (
+                        anthropic.Anthropic(api_key=self._api_key)
+                        if self._api_key
+                        else anthropic.Anthropic()
+                    )
         return self._client
 
     def complete(

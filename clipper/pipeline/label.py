@@ -9,8 +9,10 @@ these records straight from the DB.
 from __future__ import annotations
 
 import json
+from concurrent.futures import ThreadPoolExecutor
 from typing import List, Optional
 
+from ..config import get_settings
 from ..db import Clip, ClipStatus, init_db, session_scope
 from ..llm import LLMClient
 from ..storage import Storage, read_json, write_json
@@ -85,12 +87,24 @@ def run(
     clips = read_json(storage, job_id, RENDER)
     llm = llm or LLMClient()
 
+    # Label clips concurrently — this is the slowest LLM stage (one call/clip).
+    metas: List[Optional[dict]] = [None] * len(clips)
+    if clips:
+        workers = min(max(1, get_settings().llm_concurrency), len(clips))
+        with ThreadPoolExecutor(max_workers=workers) as ex:
+            for i, meta in ex.map(
+                lambda p: (p[0], label_clip(p[1].get("text", ""), llm)),
+                list(enumerate(clips)),
+            ):
+                metas[i] = meta
+
     records: List[dict] = []
-    for c in clips:
-        meta = label_clip(c.get("text", ""), llm)
+    for c, meta in zip(clips, metas):
         records.append(
             {
-                "id": c["id"],
+                # globally-unique id (the on-disk filename stays the per-job
+                # short id; clips are served by file_path, not id)
+                "id": f"{job_id}_{c['id']}",
                 "job_id": job_id,
                 "start": c["start"],
                 "end": c["end"],

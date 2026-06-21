@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import asyncio
 import importlib.util
+import os
 import shutil
 import subprocess
 
@@ -89,7 +90,8 @@ def test_full_pipeline_upload(tmp_path, monkeypatch):
     st = LocalStorage()
     assert st.exists(job_id, "clips.json")
     for r in records:
-        assert st.exists(job_id, "clips", f"{r['id']}.mp4")
+        assert r["id"].startswith(job_id + "_")     # globally-unique id
+        assert os.path.exists(r["file_path"])        # served by file_path, not id
         assert r["title"] == "The Quick Brown Fox"
         assert r["status"] == "ready"
 

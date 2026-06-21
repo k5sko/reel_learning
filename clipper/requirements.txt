@@ -10,6 +10,8 @@ python-dotenv==1.2.1
 # --- ingest / transcribe ---
 yt-dlp==2025.10.14
 faster-whisper==1.2.1
+# optional: fast cloud transcription (only used when CLIPPER_ASR_BACKEND=groq)
+groq==1.0.0
 
 # --- API (frontend bridge) ---
 fastapi==0.128.8

@@ -36,6 +36,13 @@ class Settings(BaseSettings):
     asr_compute_type: str = "int8"          # int8 keeps CPU memory/time bounded
     asr_language: Optional[str] = None      # None = autodetect
     asr_beam_size: int = 5
+    # Groq cloud transcription (set CLIPPER_ASR_BACKEND=groq) — Whisper on LPUs,
+    # ~100x realtime. Needs GROQ_API_KEY.
+    groq_api_key: Optional[str] = Field(
+        default=None,
+        validation_alias=AliasChoices("GROQ_API_KEY", "CLIPPER_GROQ_API_KEY"),
+    )
+    groq_model: str = "whisper-large-v3-turbo"
 
     # --- LLM (Anthropic) ---------------------------------------------------
     # Read ANTHROPIC_API_KEY (SDK convention) or CLIPPER_ANTHROPIC_API_KEY.
@@ -43,9 +50,10 @@ class Settings(BaseSettings):
         default=None,
         validation_alias=AliasChoices("ANTHROPIC_API_KEY", "CLIPPER_ANTHROPIC_API_KEY"),
     )
-    llm_model: str = "claude-opus-4-8"
+    llm_model: str = "claude-sonnet-4-6"
     llm_max_tokens: int = 8000
-    llm_effort: str = "high"                # low | medium | high | xhigh | max
+    llm_effort: str = "low"                 # low | medium | high | xhigh | max
+    llm_concurrency: int = 8                # parallel label/segment LLM calls
 
     # --- segmentation (LLM moment-finding) --------------------------------
     segment_chunk_size: int = 120           # sentences per LLM chunk

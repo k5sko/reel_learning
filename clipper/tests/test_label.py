@@ -2,14 +2,18 @@
 
 from __future__ import annotations
 
+import threading
+
 
 class FakeLLM:
     def __init__(self, payload):
         self.payload = payload
         self.calls = 0
+        self._lock = threading.Lock()  # labeling runs calls concurrently
 
     def complete_json(self, prompt, schema, *, system=None, max_tokens=None):
-        self.calls += 1
+        with self._lock:
+            self.calls += 1
         return dict(self.payload)
 
 
@@ -46,6 +50,7 @@ def test_label_writes_records_and_db(tmp_path, monkeypatch):
 
     assert fake.calls == 2
     assert st.exists("j", "clips.json")
+    assert records[0]["id"] == "j_c_01"                 # globally-unique id
     assert records[0]["title"] == "Train Your Focus"
     assert records[0]["tags"] == ["focus", "habits"]   # list in the JSON artifact
     assert records[0]["score"] == 1.0                  # clamped
@@ -53,13 +58,13 @@ def test_label_writes_records_and_db(tmp_path, monkeypatch):
 
     # DB rows present, tags decoded, status ready
     with db.session_scope() as s:
-        c1 = s.get(db.Clip, "c_01")
+        c1 = s.get(db.Clip, "j_c_01")
         assert c1 is not None
         assert c1.job_id == "j"
         assert c1.status == "ready"
         assert c1.tag_list() == ["focus", "habits"]
         assert c1.score == 1.0
-        assert s.get(db.Clip, "c_02") is not None
+        assert s.get(db.Clip, "j_c_02") is not None
 
     # resumable: cached artifact, no further LLM calls
     label.run("j", st, llm=fake)
