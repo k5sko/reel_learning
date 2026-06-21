@@ -28,7 +28,7 @@ export default function Onboarding({ onComplete, onSkip }) {
 
       <header className="mb-7">
         <p className="mb-3 font-mono text-[11px] uppercase tracking-[0.2em] text-gray-700">
-          Reel Learning
+          Prism
         </p>
         <h1 className="font-head text-[30px] font-semibold leading-[36px] tracking-[-1px] text-gray-1000">
           What's your
