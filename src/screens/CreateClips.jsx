@@ -106,7 +106,8 @@ export default function CreateClips({ libraryCount = 0, onDone, onBrowse }) {
               <div>
                 <p className="text-[14px] font-medium text-gray-1000">{STAGE_LABEL[status] || 'Working…'}</p>
                 <p className="mt-0.5 text-[12px] text-gray-700">
-                  First run downloads the Whisper model and can take a few minutes.
+                  Transcribing on Groq and clipping with Claude — usually under a minute for short
+                  videos. Longer videos take proportionally more.
                 </p>
               </div>
             </div>
